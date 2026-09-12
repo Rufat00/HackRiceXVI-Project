@@ -1,0 +1,28 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pulse — the room picks the music</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css"></head>
+<body><main class="landing">
+  <a class="wordmark" href="/"><i></i> Pulse</a>
+  <h1 style="margin-top:2rem">The room picks the music.</h1>
+  <p class="lead">Put a QR code on the screen. Guests request songs, vote on what's playing, and pitch themes. The DJ brain weighs it all and keeps the night moving — no one hogging the aux.</p>
+  <form id="f" class="panel">
+    <div class="field"><label>Party name</label><input name="name" placeholder="Marz's birthday" maxlength="60"></div>
+    <div class="field"><label>Your name on the guest list</label><input name="host_name" placeholder="Host" maxlength="24"></div>
+    <div class="field"><label>How long is it going? (hours, optional)</label><input name="hours" type="number" min="1" max="12" placeholder="4"><span class="small muted">Lets the DJ plan the energy arc — warm up, peak, wind down.</span></div>
+    <button class="btn" style="width:100%">Open the party</button>
+  </form>
+  <p class="small muted" style="margin-top:1.5rem">Runs with a built-in catalog out of the box. Connect Spotify from the host screen to play the real thing.</p>
+</main>
+<script src="/static/shared.js"></script>
+<script>
+document.getElementById("f").onsubmit = async (e) => {
+  e.preventDefault();
+  const f = Object.fromEntries(new FormData(e.target)); if (!f.hours) delete f.hours;
+  try {
+    const r = await fetch("/api/parties", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(f) });
+    const d = await r.json(); if (!r.ok) throw new Error(d.error);
+    location.href = d.host_url;
+  } catch (err) { Pulse.toast(err.message, true); }
+};
+</script></body></html>

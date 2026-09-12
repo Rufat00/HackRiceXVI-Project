@@ -1,0 +1,112 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Pulse — join the party</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css"></head>
+<body>
+<main class="guest" id="app"></main>
+<nav class="tabs" id="tabs" hidden>
+  <button data-tab="now" class="on">Now</button><button data-tab="request">Request</button><button data-tab="themes">Themes</button>
+</nav>
+<script src="/static/shared.js"></script>
+<script>
+(() => {
+  const { esc, api, mmss, toast, art } = Pulse;
+  const $ = (s) => document.querySelector(s);
+  const app = $("#app");
+  let S = null, tab = "now", results = [], lastQ = "", timer;
+
+  async function poll() {
+    try { S = await api("/state"); if (!S.me) return renderJoin(); $("#tabs").hidden = false; render(); }
+    catch (e) { toast(e.message, true); }
+    finally { timer = setTimeout(poll, 4000); }
+  }
+
+  function renderJoin() {
+    $("#tabs").hidden = true;
+    if ($("#joinf")) return;
+    app.innerHTML = `<div class="join-form">
+      <a class="wordmark" href="/"><i></i> Pulse</a>
+      <h1 style="margin-top:1.5rem">${esc(S.party.name)}</h1>
+      <p class="muted">Request songs, vote on what's playing, pitch a theme. No account needed.</p>
+      <form id="joinf" class="panel"><div class="field"><label>What should we call you?</label><input name="nickname" maxlength="24" required autocomplete="nickname" placeholder="Your name"></div><button class="btn" style="width:100%">Join the party</button></form></div>`;
+    $("#joinf").onsubmit = async (e) => {
+      e.preventDefault();
+      try { await api("/join", { body: { nickname: e.target.nickname.value } }); clearTimeout(timer); poll(); }
+      catch (err) { toast(err.message, true); }
+    };
+  }
+
+  document.querySelectorAll("#tabs button").forEach((b) => (b.onclick = () => { tab = b.dataset.tab; document.querySelectorAll("#tabs button").forEach((x) => x.classList.toggle("on", x === b)); render(); }));
+
+  function render() {
+    if (tab === "now") renderNow(); else if (tab === "request") renderRequest(); else renderThemes();
+  }
+
+  function header(sub) {
+    return `<header><div><div class="muted small">${esc(S.party.name)}</div><h2>${sub}</h2></div><span class="chip">${esc(S.me.nickname)}</span></header>`;
+  }
+
+  function renderNow() {
+    const np = S.now_playing;
+    if (!np) { app.innerHTML = header("Now playing") + `<div class="empty">Nothing's playing yet.</div>`; return; }
+    const t = np.track, total = np.up + np.down;
+    app.innerHTML = header("Now playing") + `
+      <div class="np-card">${art(t)}<div class="title">${esc(t.title)}</div><div class="artist">${esc(t.artist)}</div>
+        <div class="muted small" style="margin-top:.5rem">${esc(np.explanation || "")}</div></div>
+      <div class="votebar">
+        <button class="down ${np.my_vote === -1 ? "on" : ""}" id="vd">👎 ${np.down}</button>
+        <button class="up ${np.my_vote === 1 ? "on" : ""}" id="vu">👍 ${np.up}</button>
+      </div>
+      <div class="muted small" style="text-align:center">${total} vote${total === 1 ? "" : "s"} · the room can skip a song it doesn't like</div>
+      <h3 style="margin:1.5rem 0 .6rem">Up next</h3>
+      <div class="list">${S.queue.slice(0, 5).map(qRow).join("") || `<div class="muted small">Queue's empty — request something!</div>`}</div>`;
+    $("#vu").onclick = () => vote(1); $("#vd").onclick = () => vote(-1);
+    bindQueueVotes();
+  }
+  async function vote(v) {
+    try { const r = await api("/vote", { body: { value: v } }); S.now_playing.up = r.up; S.now_playing.down = r.down; S.now_playing.my_vote = r.my_vote; renderNow(); }
+    catch (e) { toast(e.message, true); }
+  }
+  const qRow = (q) => `<div class="q ${q.source}">${art(q.track)}<div><div class="t">${esc(q.track.title)}</div><div class="a">${esc(q.track.artist)}</div><div class="w">${esc(q.explanation)}</div></div>
+    ${q.source === "crowd" ? `<div class="mini"><button class="down ${q.my_vote === -1 ? "on" : ""}" data-qv="-1" data-id="${esc(q.track.id)}">👎</button><button class="up ${q.my_vote === 1 ? "on" : ""}" data-qv="1" data-id="${esc(q.track.id)}">${q.net_votes >= 0 ? "+" : ""}${q.net_votes} 👍</button></div>` : `<span class="chip">DJ</span>`}</div>`;
+  function bindQueueVotes() {
+    document.querySelectorAll("[data-qv]").forEach((b) => (b.onclick = async () => {
+      try { await api("/queue/vote", { body: { track_id: b.dataset.id, value: +b.dataset.qv } }); clearTimeout(timer); poll(); } catch (e) { toast(e.message, true); }
+    }));
+  }
+
+  function renderRequest() {
+    app.innerHTML = header("Request a song") + `
+      <form class="search" id="sf"><input name="q" placeholder="Song, artist, or genre…" value="${esc(lastQ)}" autocomplete="off"><button class="btn">Search</button></form>
+      <div id="results">${results.length ? results.map(resRow).join("") : `<div class="muted small">${S.party.spotify_live ? "Searches Spotify's full catalog." : "Search the party catalog. Try “latin”, “2000s”, “chill”."}</div>`}</div>
+      <h3 style="margin:1.5rem 0 .6rem">Queue</h3><div class="list">${S.queue.filter((q) => q.source === "crowd").map(qRow).join("") || `<div class="muted small">Nobody's requested anything yet.</div>`}</div>`;
+    $("#sf").onsubmit = async (e) => {
+      e.preventDefault(); lastQ = e.target.q.value;
+      try { results = (await api(`/search?q=${encodeURIComponent(lastQ)}`)).tracks; renderRequest(); } catch (err) { toast(err.message, true); }
+    };
+    document.querySelectorAll("[data-sug]").forEach((b) => (b.onclick = async () => {
+      try { await api("/suggest", { body: { track_id: b.dataset.sug } }); toast("Requested — the DJ's got it"); clearTimeout(timer); poll(); }
+      catch (err) { toast(err.message, true); }
+    }));
+    bindQueueVotes();
+  }
+  const resRow = (t) => `<div class="res">${art(t)}<div><div class="t">${esc(t.title)}</div><div class="a">${esc(t.artist)}${t.year ? ` · ${t.year}` : ""}${t.genres && t.genres.length ? ` · ${esc(t.genres.slice(0, 2).join(", "))}` : ""}</div></div><button class="btn sm" data-sug="${esc(t.id)}">Request</button></div>`;
+
+  function renderThemes() {
+    app.innerHTML = header("Theme board") + `
+      <p class="muted small">Pitch a vibe for the night. The top theme steers what the DJ picks.</p>
+      <form class="propose" id="pf"><input name="text" placeholder="e.g. 2000s throwback, latin night, chill" maxlength="60" required><button class="btn">Pitch</button></form>
+      <div class="list">${S.themes.map((th) => `<div class="q"><div style="display:grid;place-items:center;font-size:1.3rem">${S.dj.active_theme === th.text ? "🎯" : "💡"}</div>
+        <div><div class="t">${esc(th.text)}</div><div class="a">by ${esc(th.nickname)}${S.dj.active_theme === th.text ? " · steering the DJ" : ""}</div>${th.keywords.length || th.year_from ? `<div class="w">${esc([...th.keywords, th.year_from ? `${th.year_from}–${th.year_to}` : ""].filter(Boolean).join(" · "))}</div>` : ""}</div>
+        <div class="mini"><button class="down ${th.my_vote === -1 ? "on" : ""}" data-tv="-1" data-id="${th.id}">👎</button><button class="up ${th.my_vote === 1 ? "on" : ""}" data-tv="1" data-id="${th.id}">${th.net >= 0 ? "+" : ""}${th.net} 👍</button></div></div>`).join("") || `<div class="empty">No themes yet. Start one.</div>`}</div>`;
+    $("#pf").onsubmit = async (e) => {
+      e.preventDefault();
+      try { await api("/themes", { body: { text: e.target.text.value } }); toast("Theme pitched"); clearTimeout(timer); poll(); } catch (err) { toast(err.message, true); }
+    };
+    document.querySelectorAll("[data-tv]").forEach((b) => (b.onclick = async () => {
+      try { await api(`/themes/${b.dataset.id}/vote`, { body: { value: +b.dataset.tv } }); clearTimeout(timer); poll(); } catch (e) { toast(e.message, true); }
+    }));
+  }
+  poll();
+})();
+</script></body></html>
