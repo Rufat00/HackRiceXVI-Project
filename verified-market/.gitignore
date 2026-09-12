@@ -1,0 +1,5 @@
+.env
+market.db
+static/photos/
+__pycache__/
+mock_ledger.json

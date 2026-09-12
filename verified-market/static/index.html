@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vouch — verified campus marketplace</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300..800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+
+<header class="top">
+  <a class="brand" href="#browse">Vouch</a>
+  <nav id="nav" class="nav" hidden>
+    <a href="#browse">Browse</a>
+    <a href="#sell">Sell</a>
+    <a href="#deals">My deals <span id="deal-count" class="count" hidden></span></a>
+    <a href="#admin" id="nav-admin" hidden>Disputes</a>
+  </nav>
+  <div id="who" class="who"></div>
+</header>
+
+<main id="app">
+
+  <!-- sign in -->
+  <section id="view-signin" class="view" hidden>
+    <div class="intro">
+      <h1>Buy and sell with people who are actually who they say they are.</h1>
+      <p>Every account on Vouch belongs to one verified human. Your money sits with us until you've met and confirmed the deal. No fake accounts, no “Venmo me first.”</p>
+    </div>
+    <form id="signin-form" class="card form" autocomplete="on">
+      <label>Name <input name="name" required placeholder="Sam Rivera"></label>
+      <label>School email <input name="email" type="email" required placeholder="sam@uh.edu"></label>
+      <button class="primary" type="submit">Continue</button>
+      <p class="fine">Returning? Same email signs you back in.</p>
+    </form>
+  </section>
+
+  <!-- verification gate -->
+  <section id="view-verify" class="view" hidden>
+    <div class="gate card">
+      <h2>One more step before you can buy or sell</h2>
+      <p>We check that you're a real, distinct person. Takes about two minutes and you only do it once. Persona handles the check — we never see your ID document.</p>
+      <div id="verify-live" hidden>
+        <button class="primary" id="btn-persona">Verify with Persona</button>
+      </div>
+      <div id="verify-mock" hidden>
+        <p class="fine">Sandbox mode: pick the outcome, just like Persona's sandbox toggle.</p>
+        <div class="row">
+          <button class="primary" data-outcome="completed">Simulate a real person</button>
+          <button class="ghost" data-outcome="failed">Simulate a bot / fake ID</button>
+        </div>
+      </div>
+      <p id="verify-msg" class="msg" hidden></p>
+      <button class="link" id="btn-browse-only">Just browse for now</button>
+    </div>
+  </section>
+
+  <!-- browse -->
+  <section id="view-browse" class="view" hidden>
+    <div class="section-head">
+      <h2>Open listings</h2>
+      <p class="fine">Every seller here passed identity verification. Ratings only come from completed deals.</p>
+    </div>
+    <div id="listings" class="grid"></div>
+  </section>
+
+  <!-- sell -->
+  <section id="view-sell" class="view" hidden>
+    <div class="sell">
+      <div class="card form">
+        <h2>List something</h2>
+        <label>What is it <input id="sell-title" required placeholder="Calc II textbook, 9th ed."></label>
+        <div class="row">
+          <label>Price <input id="sell-price" type="number" min="1" step="0.01" placeholder="45"></label>
+          <label>Category
+            <select id="sell-cat">
+              <option value="textbook">Textbook</option>
+              <option value="electronics">Electronics</option>
+              <option value="tickets">Tickets</option>
+              <option value="sublet">Sublet</option>
+              <option value="furniture">Furniture</option>
+              <option value="other">Other</option>
+            </select>
+          </label>
+        </div>
+        <label>Details <textarea id="sell-desc" rows="3" placeholder="Condition, pickup spot, anything a buyer should know"></textarea></label>
+        <button class="primary" id="btn-list" disabled>Publish listing</button>
+        <p id="sell-msg" class="msg" hidden></p>
+      </div>
+      <div class="card proof">
+        <h3>Proof the item is really yours</h3>
+        <p>Write this word on a piece of paper and put it in the photo. The photo has to be taken here — uploads aren't allowed, so nobody can reuse a picture from the internet.</p>
+        <div class="proof-word" id="proof-word">— — —</div>
+        <div class="camera">
+          <video id="cam" autoplay playsinline muted></video>
+          <canvas id="shot" hidden></canvas>
+          <img id="shot-preview" alt="" hidden>
+        </div>
+        <div class="row">
+          <button class="ghost" id="btn-cam">Open camera</button>
+          <button class="primary" id="btn-snap" disabled>Take photo</button>
+          <button class="ghost" id="btn-retake" hidden>Retake</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- deals -->
+  <section id="view-deals" class="view" hidden>
+    <div class="section-head">
+      <h2>My deals</h2>
+      <p class="fine">Money moves in one direction: your wallet, to escrow, to the seller — and only once you've both confirmed.</p>
+    </div>
+    <div id="deals" class="stack"></div>
+  </section>
+
+  <!-- admin -->
+  <section id="view-admin" class="view" hidden>
+    <div class="section-head">
+      <h2>Disputes</h2>
+      <p class="fine">Frozen escrow, both sides' history, one decision. Because identities are verified, a ban is permanent.</p>
+    </div>
+    <div class="row">
+      <button class="ghost" id="btn-ff">Fast-forward time (demo: fire auto-release / auto-refund)</button>
+    </div>
+    <div id="admin-deals" class="stack"></div>
+  </section>
+
+</main>
+
+<template id="tpl-deal">
+  <article class="deal card">
+    <header class="deal-head">
+      <img class="thumb" alt="">
+      <div>
+        <h3 class="deal-title"></h3>
+        <p class="deal-parties fine"></p>
+      </div>
+      <span class="state"></span>
+    </header>
+    <div class="ledger">
+      <div class="slot" data-slot="buyer"><span class="slot-label">Buyer's wallet</span><span class="slot-amt"></span></div>
+      <div class="track"></div>
+      <div class="slot" data-slot="escrow"><span class="slot-label">Held by Vouch</span><span class="slot-amt"></span></div>
+      <div class="track"></div>
+      <div class="slot" data-slot="seller"><span class="slot-label">Seller's wallet</span><span class="slot-amt"></span></div>
+    </div>
+    <div class="deal-body"></div>
+    <details class="history">
+      <summary>History</summary>
+      <ul class="events"></ul>
+    </details>
+  </article>
+</template>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="https://cdn.withpersona.com/dist/persona-v5.1.2.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

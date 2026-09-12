@@ -1,0 +1,7 @@
+__pycache__/
+*.db
+*.db-*
+nessie_mock_ledger.json*
+server.log
+.env
+.pytest_cache/

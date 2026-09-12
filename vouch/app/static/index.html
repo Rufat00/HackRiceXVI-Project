@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vouch — buy and sell with people you can trust</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400..700;1,400..700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<header class="top">
+  <a class="wordmark" href="#/" aria-label="Vouch home">
+    <svg width="26" height="26" viewBox="0 0 26 26" aria-hidden="true"><path d="M3 5.5 13 22 23 5.5" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linejoin="round" stroke-linecap="round"/><path d="M8.5 5.5 13 13" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round"/></svg>
+    Vouch
+  </a>
+  <nav class="nav" id="nav"></nav>
+  <div class="me" id="me"></div>
+</header>
+
+<main id="view" class="view" aria-live="polite"></main>
+
+<div id="toast" class="toast" role="status"></div>
+<div id="modal-root"></div>
+
+<footer class="foot">
+  <span>Identity by Persona. Escrow on Capital One Nessie. Built at HackRice 16.</span>
+  <span id="mode-badges"></span>
+</footer>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
