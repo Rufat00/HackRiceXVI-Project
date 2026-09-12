@@ -10,6 +10,7 @@ from ..db import get_db
 from ..services import party as P
 from ..services.dj import parse_theme
 from ..services.spotify import SpotifyError
+from ..services.real_test_tracks import seed_real_tracks
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
@@ -305,8 +306,34 @@ def vote_theme(tid):
 @with_party
 @host_required
 def host_skip():
-    picked = P.advance(g.party, "skipped_by_host")
-    return jsonify(ok=True, next=picked["track"] if picked else None)
+    from ..services.spotify import SpotifyError
+    try:
+        picked = P.advance(g.party, "skipped_by_host")
+    except SpotifyError as e:
+        return jsonify(error=f"Couldn't find a next song: {e}"), 502
+    if not picked:
+        return jsonify(error="No song available to play right now — the queue is empty and the fallback search found nothing."), 409
+    return jsonify(ok=True, next=picked["track"])
+
+@api.post("/parties/<code>/host/seed-test-tracks")
+@with_party
+@host_required
+def host_seed_test_tracks():
+    if current_app.config["SPOTIFY_MOCK"] or not P.spotify_live(g.party):
+        return jsonify(error="Connect Spotify for this party first."), 400
+    tracks = seed_real_tracks(g.party, P.upsert_track, get_db())
+    added = 0
+    for t in tracks:
+        try:
+            get_db().execute("INSERT INTO suggestions (party_id, track_id, guest_id, note) VALUES (?,?,?,?)",
+                             (g.party["id"], t["id"], g.guest["id"], "test track"))
+            get_db().execute("INSERT OR REPLACE INTO suggestion_votes (party_id, track_id, guest_id, value) VALUES (?,?,?,1)",
+                             (g.party["id"], t["id"], g.guest["id"]))
+            added += 1
+        except Exception:
+            pass
+    get_db().commit()
+    return jsonify(ok=True, added=added, total=len(tracks))
 
 
 @api.post("/parties/<code>/host/play")

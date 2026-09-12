@@ -50,10 +50,16 @@
       <label><input type="checkbox" id="auto" ${p.auto_dj ? "checked" : ""}> Auto DJ</label>
       <label><input type="checkbox" id="expl" ${p.settings.block_explicit ? "checked" : ""}> Hide explicit</label>
       <button class="btn ghost sm" id="skip">Skip</button>
+      ${p.spotify_live ? `<button class="btn ghost sm" id="seed">Load test tracks</button>` : ""}
       ${p.spotify_mock ? `<span class="chip">Built-in catalog</span>` : p.spotify_live ? `<span class="chip up">Spotify connected</span>` : `<a class="btn quiet sm" href="/api/parties/${p.code}/spotify/login">Connect Spotify</a>`}`;
     $("#auto").onchange = (e) => api("/host/settings", { body: { auto_dj: e.target.checked } });
     $("#expl").onchange = (e) => api("/host/settings", { body: { block_explicit: e.target.checked } });
-    $("#skip").onclick = async () => { await api("/host/skip", { body: {} }); poll(); };
+    $("#skip").onclick = async () => { try { await api("/host/skip", { body: {} }); poll(); } catch (e) { toast(e.message, true); } };
+    const seedBtn = $("#seed");
+    if (seedBtn) seedBtn.onclick = async () => {
+      try { const r = await api("/host/seed-test-tracks", { body: {} }); toast(`Loaded ${r.added} real songs into the queue`); poll(); }
+      catch (e) { toast(e.message, true); }
+    };
 
     // now playing
     if (!np) { $("#now").innerHTML = `<div class="empty">Nothing playing. ${p.auto_dj ? "Waiting for the DJ…" : "Auto DJ is off — hit Skip to start."}</div>`; }
