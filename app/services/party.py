@@ -62,7 +62,15 @@ def get_track(track_id):
     return track_dict(r) if r else None
 
 
+_search_cache = {}  # {(spotify_live, query): (expires_at, results)}
+SEARCH_CACHE_TTL_S = 120
+
+
 def search_tracks(party, q):
+    key = (spotify_live(party), q.strip().lower())
+    hit = _search_cache.get(key)
+    if hit and hit[0] > time.time():
+        return hit[1]
     if spotify_live(party):
         toks, changed = _sp().ensure_fresh(tokens_for(party))
         if changed:
@@ -73,6 +81,7 @@ def search_tracks(party, q):
     for t in results:
         upsert_track(t)
     get_db().commit()
+    _search_cache[key] = (time.time() + SEARCH_CACHE_TTL_S, results)
     return results
 
 
@@ -89,9 +98,22 @@ def play_votes(play_id):
 
 
 def elapsed_ms(play):
-    scale = current_app.config["MOCK_TIME_SCALE"]
+    # MOCK_TIME_SCALE only makes sense for the simulated player. If Spotify is
+    # genuinely connected we must reason in real time regardless of that
+    # setting, since we now lean on this clock to decide when to bother
+    # calling Spotify at all.
+    scale = 1.0 if current_app.extensions.get("spotify") and not current_app.config["SPOTIFY_MOCK"] \
+        else current_app.config["MOCK_TIME_SCALE"]
     started = datetime.strptime(play["started_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
     return int((_now() - started).total_seconds() * 1000 * scale)
+
+
+# How often (in seconds of a track's own elapsed time) we double-check with a
+# real Spotify call while a track is mid-play, to catch a host manually
+# changing the song. Between heartbeats we trust our own clock, which is the
+# single biggest cut to Spotify API call volume — previously every poll
+# (~every 3s per open host screen) called /me/player regardless.
+SPOTIFY_POLL_HEARTBEAT_S = 20
 
 
 def recent_plays(party_id, limit=12):
@@ -185,16 +207,36 @@ def candidates(party, ctx, include_fallback=True):
     return out
 
 
+_fallback_cache = {}  # party_id -> (fetched_at_monotonic, query, tracks)
+_FALLBACK_CACHE_SECONDS = 25
+_RATE_LIMIT_BACKOFF_SECONDS = 90  # back off harder specifically after a 429
+
+
 def fallback_pool(party, ctx):
     """When the crowd hasn't queued enough, the DJ fills from the catalog
-    (mock) or a theme-driven Spotify search (live)."""
+    (mock) or a theme-driven Spotify search (live).
+
+    Cached briefly: without this, an empty queue on a live party means every
+    3-second poll re-searches Spotify, which burns through their rate limit
+    fast (this is exactly what happened during testing — repeated polling
+    with nothing queued hammered /search continuously)."""
     if spotify_live(party):
         kws = (ctx["theme"] or {}).get("keywords") or []
         q = " ".join(kws[:2]) if kws else ("party " + ("chill" if ctx["target_energy"] < 0.55 else "dance"))
+        cached = _fallback_cache.get(party["id"])
+        if cached and cached[1] == q and (time.monotonic() - cached[0]) < _FALLBACK_CACHE_SECONDS:
+            return cached[2]
         try:
-            return search_tracks(party, q)
-        except SpotifyError:
+            tracks = search_tracks(party, q)
+        except SpotifyError as e:
+            if "429" in str(e) or "QUOTA_EXCEEDED" in str(e):
+                # Still cache the failure briefly so a rate limit doesn't
+                # itself get hammered every poll while it's in effect.
+                _fallback_cache[party["id"]] = (time.monotonic(), q, [])
+                raise
             return []
+        _fallback_cache[party["id"]] = (time.monotonic(), q, tracks)
+        return tracks
     return catalog.CATALOG
 
 
@@ -249,6 +291,42 @@ def tick(party):
             return events
 
     if spotify_live(party):
+        if cur is None:
+            # Nothing recorded as playing -> always try to start. This is the
+            # one case where we must ask Spotify's live state, since we have
+            # no local clock to reason from yet.
+            toks, changed = _sp().ensure_fresh(tokens_for(party))
+            if changed:
+                save_tokens(party["id"], toks)
+            if party["auto_dj"]:
+                try:
+                    picked = advance(party, "start")
+                except SpotifyError as e:
+                    return [{"type": "spotify_error", "detail": str(e)}]
+                if picked:
+                    events.append({"type": "started", "track": picked["track"]["title"]})
+                else:
+                    events.append({"type": "no_candidates"})
+            return events
+
+        # A track is already recorded as playing. Rather than call Spotify's
+        # /me/player on every single poll (every ~3s per open host screen —
+        # by far the largest source of API calls in practice), reason from
+        # our own clock first. We started this track at `cur['started_at']`
+        # and know its duration; only fall through to an actual Spotify call
+        # when we're near the end (to catch skip/finish precisely) or on a
+        # slower heartbeat (to catch a host manually changing the song).
+        t = get_track(cur["track_id"])
+        local_elapsed = elapsed_ms(cur)
+        near_end = t and (t["duration_ms"] - local_elapsed) < 4000
+        # Heartbeat bucket derived from this play's own elapsed time, not
+        # shared wall-clock -- deterministic per track (doesn't jitter
+        # against poll timing) and staggered across parties (doesn't cause
+        # every party's heartbeat to land in the same instant).
+        heartbeat_due = (local_elapsed // 1000) % SPOTIFY_POLL_HEARTBEAT_S < 3
+        if not near_end and not heartbeat_due:
+            return events  # trust the local clock this tick; no API call
+
         toks, changed = _sp().ensure_fresh(tokens_for(party))
         if changed:
             save_tokens(party["id"], toks)
@@ -256,13 +334,8 @@ def tick(party):
             st = _sp().state(toks)
         except SpotifyError as e:
             return [{"type": "spotify_error", "detail": str(e)}]
-        if cur is None:
-            if party["auto_dj"] and (st is None or not st["is_playing"] or st["duration_ms"] - st["progress_ms"] < 3000):
-                picked = advance(party, "start")
-                if picked:
-                    events.append({"type": "started", "track": picked["track"]["title"]})
-            return events
         if st is None:
+
             # Host closed Spotify or nothing active; consider the song over.
             if elapsed_ms(cur) > 30000:
                 end_play(cur["id"], "finished")
