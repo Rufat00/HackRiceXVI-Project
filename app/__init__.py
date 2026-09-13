@@ -45,6 +45,20 @@ def create_app(overrides=None):
         db = get_db()
         db.execute("UPDATE parties SET spotify_tokens=? WHERE code=?", (json.dumps(tokens), state))
         db.commit()
+        # Auto-seed a small set of real, verified-URI songs the first time a
+        # party connects to Spotify, so there's something real to play
+        # immediately without needing /search (the endpoint most likely to
+        # be rate-limited) or a manual "Load test tracks" click.
+        try:
+            party = db.execute("SELECT * FROM parties WHERE code=?", (state,)).fetchone()
+            host_guest = db.execute("SELECT id FROM guests WHERE party_id=? AND is_host=1", (party["id"],)).fetchone()
+            if party and host_guest:
+                from .services import party as P
+                from .services.real_test_tracks import seed_and_suggest
+                seed_and_suggest(party, host_guest["id"], P.upsert_track, db)
+        except Exception as e:
+            # Never let a seeding hiccup break the OAuth flow itself.
+            app.logger.warning("auto-seed after Spotify connect failed: %s", e)
         return redirect(f"/host/{state}?spotify=connected")
 
     @app.get("/healthz")

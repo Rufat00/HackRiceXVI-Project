@@ -1,178 +1,135 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pulse — live room</title>
-  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/styles.css">
-</head>
-<body class="host-body">
-  <div class="host-app">
-    <header class="host-topbar">
-      <a class="wordmark" href="/"><i></i> Pulse</a>
-      <div class="party-heading"><span class="live-dot"></span><span id="pname">Live room</span></div>
-      <div class="hostbar" id="hostbar"></div>
-    </header>
-
-    <main class="host-stage" id="stage">
-      <section class="now" id="now"><div class="empty">Warming up…</div></section>
-    </main>
-
-    <aside class="host-side">
-      <section class="join-card">
-        <div class="join-copy">
-          <span class="eyebrow">Join the room</span>
-          <div class="join-code" id="code"></div>
-          <div class="join-url" id="joinurl"></div>
-        </div>
-        <img id="qr" alt="QR code to join this party">
-      </section>
-
-      <section class="side-card room-card">
-        <div class="section-title"><span>Room pulse</span><span class="status-pill">Live</span></div>
-        <div class="room-stats" id="roomstats"></div>
-        <div class="room-vibe" id="room"></div>
-      </section>
-
-      <section class="side-card queue-card">
-        <div class="section-title"><span>Up next</span><span class="muted small" id="queuecount"></span></div>
-        <div class="list" id="queue"></div>
-      </section>
-    </aside>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pulse — host screen</title>
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/styles.css"></head>
+<body>
+<div class="host">
+  <div class="top">
+    <div style="display:flex;gap:1rem;align-items:center"><a class="wordmark" href="/"><i></i> Pulse</a><span class="party-name" id="pname"></span></div>
+    <div class="hostbar" id="hostbar"></div>
   </div>
 
-  <div class="skip-flash" id="skipflash" role="status" aria-live="polite">
-    <div class="skip-flash-icon">»</div>
-    <div class="skip-flash-count" id="skipcount"></div>
-    <div class="skip-flash-label" id="skiplabel">skip votes</div>
-  </div>
+  <section class="now" id="now"><div class="empty">Warming up…</div></section>
 
-  <script src="/static/shared.js"></script>
-  <script>
-  (() => {
-    const { esc, api, mmss, toast, art } = Pulse;
-    const $ = (s) => document.querySelector(s);
-    let S = null, tickTimer, lastPlayId = null, lastDown = 0, lastElapsed = 0, lastAt = 0, flashTimer;
+  <aside class="side">
+    <div class="panel joinbox">
+      <img id="qr" alt="QR code to join">
+      <div><div class="muted small">Scan to join, or go to</div><div class="url" id="joinurl"></div><div class="code" id="code"></div><div class="muted small" id="guests"></div></div>
+    </div>
+    <div class="panel"><h3 style="margin-bottom:.6rem">Up next</h3><div class="list" id="queue"></div></div>
+    <div class="panel themes"><h3 style="margin-bottom:.4rem">Theme board</h3><div id="themes"></div></div>
+    <div class="panel"><h3 style="margin-bottom:.6rem">Room reading</h3><div id="room"></div></div>
+    <div class="panel history"><h3 style="margin-bottom:.4rem">Played</h3><div id="history"></div></div>
+  </aside>
+</div>
+<script src="/static/shared.js"></script>
+<script>
+(() => {
+  const { esc, api, mmss, toast, art } = Pulse;
+  const $ = (s) => document.querySelector(s);
+  let S = null, tickTimer, progTimer, lastPlayId = null, lastElapsed = 0, lastAt = 0;
 
-    $("#qr").src = `/api/parties/${Pulse.code()}/qr.png`;
-    if (new URLSearchParams(location.search).get("spotify") === "connected") {
-      toast("Spotify connected. Open Spotify on a device and press play once.");
-    }
+  document.getElementById("qr").src = `/api/parties/${Pulse.code()}/qr.png`;
+  if (new URLSearchParams(location.search).get("spotify") === "connected") toast("Spotify connected. Open Spotify on a device and press play once.");
 
-    async function poll() {
-      try { S = await api("/state"); render(); }
+  async function poll() {
+    try { S = await api("/state"); render(); }
+    catch (e) { toast(e.message, true); }
+    finally { tickTimer = setTimeout(poll, 3000); }
+  }
+
+  function render() {
+    const p = S.party, np = S.now_playing, dj = S.dj;
+    $("#pname").textContent = p.name;
+    $("#code").textContent = p.code;
+    $("#joinurl").textContent = S.join_url.replace(/^https?:\/\//, "");
+    $("#guests").textContent = `${S.stats.guests_active} here · ${S.stats.votes_cast} votes · ${S.stats.songs_played} played`;
+
+    // host bar
+    $("#hostbar").innerHTML = `
+      <label><input type="checkbox" id="auto" ${p.auto_dj ? "checked" : ""}> Auto DJ</label>
+      <label><input type="checkbox" id="expl" ${p.settings.block_explicit ? "checked" : ""}> Hide explicit</label>
+      <button class="btn ghost sm" id="skip">Skip</button>
+      ${p.spotify_live ? `<button class="btn ghost sm" id="seed" title="Real tracks auto-load on connect; use this to top up the queue or if it ever comes up empty">Reload test tracks</button>` : ""}
+      ${p.spotify_mock ? `<span class="chip">Built-in catalog</span>` : p.spotify_live ? `<span class="chip up">Spotify connected</span>` : `<a class="btn quiet sm" href="/api/parties/${p.code}/spotify/login">Connect Spotify</a>`}`;
+    $("#auto").onchange = (e) => api("/host/settings", { body: { auto_dj: e.target.checked } });
+    $("#expl").onchange = (e) => api("/host/settings", { body: { block_explicit: e.target.checked } });
+    $("#skip").onclick = async () => { try { await api("/host/skip", { body: {} }); poll(); } catch (e) { toast(e.message, true); } };
+    const seedBtn = $("#seed");
+    if (seedBtn) seedBtn.onclick = async () => {
+      try { const r = await api("/host/seed-test-tracks", { body: {} }); toast(`Loaded ${r.added} real songs into the queue`); poll(); }
       catch (e) { toast(e.message, true); }
-      finally { tickTimer = setTimeout(poll, 3000); }
-    }
+    };
 
-    function render() {
-      const p = S.party, np = S.now_playing, dj = S.dj;
-      $("#pname").textContent = p.name;
-      $("#code").textContent = p.code;
-      $("#joinurl").textContent = S.join_url.replace(/^https?:\/\//, "");
-
-      $("#hostbar").innerHTML = `
-        <label class="toggle-label"><input type="checkbox" id="auto" ${p.auto_dj ? "checked" : ""}><span></span>Auto DJ</label>
-        <button class="icon-button" id="skip" title="Skip this song" aria-label="Skip this song">»</button>
-        ${p.spotify_live ? `<button class="btn ghost sm" id="seed">Test tracks</button>` : ""}
-        ${p.spotify_mock ? `<span class="source-pill">Demo catalog</span>` : p.spotify_live ? `<span class="source-pill connected">Spotify</span>` : `<a class="btn quiet sm" href="/api/parties/${p.code}/spotify/login">Connect Spotify</a>`}`;
-      $("#auto").onchange = (e) => api("/host/settings", { body: { auto_dj: e.target.checked } });
-      $("#skip").onclick = async () => { try { showSkipFlash(0, 0, true); await api("/host/skip", { body: {} }); clearTimeout(tickTimer); poll(); } catch (e) { toast(e.message, true); } };
-      const seed = $("#seed");
-      if (seed) seed.onclick = async () => { try { const r = await api("/host/seed-test-tracks", { body: {} }); toast(`Loaded ${r.added} tracks`); clearTimeout(tickTimer); poll(); } catch (e) { toast(e.message, true); } };
-
-      if (!np) {
-        $("#now").innerHTML = `<div class="empty stage-empty">${p.auto_dj ? "The DJ is finding the first track…" : "Auto DJ is off. Press skip to start."}</div>`;
-        $("#stage").style.removeProperty("--cover-image");
-      } else renderNow(np);
-
-      $("#roomstats").innerHTML = `
-        <div><strong>${S.stats.guests_active}</strong><span>listening</span></div>
-        <div><strong>${S.stats.votes_cast}</strong><span>votes</span></div>
-        <div><strong>${S.stats.open_requests}</strong><span>requests</span></div>`;
-      const energy = Math.round(dj.target_energy * 100);
-      $("#room").innerHTML = `
-        <div class="vibe-line"><span>Current vibe</span><strong>${esc(dj.active_theme || dj.phase)}</strong></div>
-        <div class="energy-track"><i style="width:${energy}%"></i></div>
-        <div class="energy-label"><span>${esc(dj.phase)}</span><span>${energy}% energy</span></div>`;
-
-      $("#queuecount").textContent = `${S.queue.length} track${S.queue.length === 1 ? "" : "s"}`;
-      $("#queue").innerHTML = S.queue.length ? S.queue.slice(0, 4).map((q, i) => `
-        <div class="queue-row ${q.source}">
-          <span class="queue-index">${String(i + 1).padStart(2, "0")}</span>${art(q.track)}
-          <div class="queue-copy"><div class="t">${esc(q.track.title)}</div><div class="a">${esc(q.track.artist)}</div></div>
-          <button class="queue-play" data-play="${esc(q.track.id)}" title="Play now" aria-label="Play ${esc(q.track.title)} now">▶</button>
-        </div>`).join("") : `<div class="muted small queue-empty">The DJ is building the queue.</div>`;
-      document.querySelectorAll("[data-play]").forEach((b) => b.onclick = async () => { await api("/host/play", { body: { track_id: b.dataset.play } }); clearTimeout(tickTimer); poll(); });
-
-      (S.events || []).forEach((e) => {
-        if (e.type === "crowd_skip") showSkipFlash(e.down, np ? np.skip_threshold.min_votes : e.down, true);
-        if (e.type === "spotify_error") toast(e.detail, true);
-      });
-    }
-
-    function renderNow(np) {
-      const t = np.track;
-      const isNewTrack = np.play_id !== lastPlayId;
-      if (!isNewTrack && np.down > lastDown) showSkipFlash(np.down, np.skip_threshold.min_votes, false);
-      lastPlayId = np.play_id;
-      lastDown = np.down;
-      lastElapsed = np.elapsed_ms;
-      lastAt = Date.now();
-
-      const tempo = Number(t.tempo) || 96 + (Number(t.energy) || .5) * 48;
-      $("#stage").style.setProperty("--beat", `${(60 / tempo).toFixed(3)}s`);
-      if (t.art_url) $("#stage").style.setProperty("--cover-image", `url(${JSON.stringify(t.art_url)})`);
-      else $("#stage").style.removeProperty("--cover-image");
-
-      const total = np.up + np.down;
-      const genres = (t.genres || []).slice(0, 2).join(" · ");
+    // now playing
+    if (!np) { $("#now").innerHTML = `<div class="empty">Nothing playing. ${p.auto_dj ? "Waiting for the DJ…" : "Auto DJ is off — hit Skip to start."}</div>`; }
+    else {
+      const t = np.track, total = np.up + np.down, half = Math.max(1, Math.max(np.up, np.down, 3));
+      const upW = (np.up / half) * 50, downW = (np.down / half) * 50;
+      const th = np.skip_threshold, need = Math.max(0, th.min_votes - total);
+      const buried = total >= th.min_votes && (np.up - np.down) / total <= th.net_ratio;
+      if (np.play_id !== lastPlayId) { lastPlayId = np.play_id; }
+      lastElapsed = np.elapsed_ms; lastAt = Date.now();
       $("#now").innerHTML = `
-        <div class="cover-zone">
-          <div class="cover-halo"></div>
-          <div class="cover-frame">${art(t, "hero-art")}</div>
-          <span class="now-badge"><i></i> Now playing</span>
+        <div style="display:grid;grid-template-columns:minmax(0,320px) 1fr;gap:1.5rem;align-items:end">
+          ${art(t, "art")}
+          <div>
+            <div class="muted">Now playing ${np.chosen_by === "host" ? "· host pick" : ""}</div>
+            <div class="title">${esc(t.title)}</div>
+            <div class="artist">${esc(t.artist)}${t.year ? ` · ${t.year}` : ""}</div>
+            <div style="margin:.75rem 0 .35rem" class="progress"><div id="prog" style="width:${(np.elapsed_ms / t.duration_ms) * 100}%"></div></div>
+            <div class="pulse-meta"><span id="el">${mmss(np.elapsed_ms)}</span><span>${mmss(t.duration_ms)}</span></div>
+          </div>
         </div>
-        <div class="track-zone">
-          <div class="marquee-window" aria-label="${esc(t.title)} by ${esc(t.artist)}">
-            <div class="marquee-track"><span>${esc(t.title)}</span><em>—</em><span class="marquee-artist">${esc(t.artist)}</span></div>
-          </div>
-          <div class="track-meta"><span>${esc(genres || "Pulse pick")}</span><span>${t.year || ""}</span></div>
-          <div class="play-progress"><i id="prog" style="width:${Math.min(100, np.elapsed_ms / t.duration_ms * 100)}%"></i></div>
-          <div class="time-row"><span id="el">${mmss(np.elapsed_ms)}</span><span>${mmss(t.duration_ms)}</span></div>
-          <div class="crowd-line">
-            <div class="reaction up"><span>♥</span><strong>${np.up}</strong></div>
-            <div class="crowd-copy"><strong>${total ? `${total} people reacted` : "Be the first to react"}</strong><span>${np.down}/${np.skip_threshold.min_votes} skip votes</span></div>
-            <div class="reaction down"><span>×</span><strong>${np.down}</strong></div>
-          </div>
-          <p class="why">${esc(np.explanation || "Selected for the room right now.")}</p>
-        </div>`;
+        <div class="pulse"><div class="down" style="width:${downW}%"></div><div class="up" style="width:${upW}%"></div><div class="mid"></div>
+          <span class="lbl l">${np.down} 👎</span><span class="lbl r">👍 ${np.up}</span></div>
+        <div class="pulse-meta"><span>${buried ? `<span class="skip-warn">Crowd is skipping this…</span>` : need > 0 ? `${need} more vote${need === 1 ? "" : "s"} until the room can skip` : `Room can skip if the balance drops below ${Math.round(Math.abs(th.net_ratio) * 100)}%`}</span><span>${total} vote${total === 1 ? "" : "s"}</span></div>
+        <div class="why"><strong>Why this song:</strong> ${esc(np.explanation || "host pick")}${np.components ? ` <span class="muted small">(${topComponents(np.components)})</span>` : ""}</div>
+        ${S.shoutout ? `<div class="shout">“${esc(S.shoutout)}”</div>` : ""}`;
     }
 
-    function showSkipFlash(count, threshold, skipped) {
-      const flash = $("#skipflash");
-      $("#skipcount").textContent = skipped ? "SKIPPED" : `${count}/${threshold}`;
-      $("#skiplabel").textContent = skipped ? "the room moved on" : "skip votes";
-      flash.classList.remove("show", "final");
-      void flash.offsetWidth;
-      flash.classList.add("show");
-      if (skipped) flash.classList.add("final");
-      clearTimeout(flashTimer);
-      flashTimer = setTimeout(() => flash.classList.remove("show", "final"), 1150);
-    }
+    // queue
+    $("#queue").innerHTML = S.queue.length ? S.queue.slice(0, 6).map((q) => `
+      <div class="q ${q.source}">${art(q.track)}
+        <div><div class="t">${esc(q.track.title)}</div><div class="a">${esc(q.track.artist)}</div><div class="w">${esc(q.explanation)}</div></div>
+        <div><div class="score">${q.score.toFixed(1)}</div>${q.source === "crowd" ? `<div class="small muted" style="text-align:right">${q.n_suggesters}👤 ${q.net_votes >= 0 ? "+" : ""}${q.net_votes}</div>` : ""}
+          <div class="mini" style="justify-content:flex-end;margin-top:.2rem"><button data-play="${esc(q.track.id)}" title="Play now">▶</button><button data-rm="${esc(q.track.id)}" title="Remove">✕</button></div></div>
+      </div>`).join("") : `<div class="muted small">Queue is empty — the DJ is on autopilot.</div>`;
+    document.querySelectorAll("[data-play]").forEach((b) => (b.onclick = async () => { await api("/host/play", { body: { track_id: b.dataset.play } }); poll(); }));
+    document.querySelectorAll("[data-rm]").forEach((b) => (b.onclick = async () => { await api("/host/remove", { body: { track_id: b.dataset.rm } }); poll(); }));
 
-    setInterval(() => {
-      if (!S || !S.now_playing) return;
-      const t = S.now_playing.track;
-      const el = Math.min(t.duration_ms, lastElapsed + (Date.now() - lastAt) * (S.party.time_scale || 1));
-      const p = $("#prog"), e = $("#el");
-      if (p) p.style.width = `${el / t.duration_ms * 100}%`;
-      if (e) e.textContent = mmss(el);
-    }, 500);
+    // themes
+    $("#themes").innerHTML = S.themes.length ? S.themes.slice(0, 6).map((th) => `
+      <div class="th ${dj.active_theme === th.text ? "active" : ""}"><span>${esc(th.text)} <span class="muted small">by ${esc(th.nickname)}</span>${th.pinned ? ` <span class="chip gold">pinned</span>` : ""}</span>
+        <span style="display:flex;gap:.4rem;align-items:center"><span>${th.net >= 0 ? "+" : ""}${th.net}</span><button class="btn ghost sm" data-pin="${th.id}">${th.pinned ? "Unpin" : "Pin"}</button></span></div>`).join("")
+      : `<div class="muted small">No themes yet. Guests can pitch one from their phone.</div>`;
+    document.querySelectorAll("[data-pin]").forEach((b) => (b.onclick = async () => {
+      const th = S.themes.find((x) => String(x.id) === b.dataset.pin);
+      await api("/host/settings", { body: { pinned_theme_id: th.pinned ? null : th.id } }); poll();
+    }));
 
-    poll();
-  })();
-  </script>
-</body>
-</html>
+    // room reading
+    const affs = Object.entries(dj.affinity || {});
+    $("#room").innerHTML = `
+      <div class="room">
+        <div><div class="k">Phase</div><div class="v">${esc(dj.phase)}</div><div class="muted small">${Math.round(dj.elapsed_min)} min in</div></div>
+        <div><div class="k">Theme</div><div class="v" style="font-size:1.1rem">${esc(dj.active_theme || "none yet")}</div></div>
+      </div>
+      <div style="margin-top:.9rem"><div class="k muted small">Target energy · ${Math.round(dj.target_energy * 100)}</div><div class="energy"><i style="left:${dj.target_energy * 100}%"></i></div></div>
+      ${affs.length ? `<div class="k muted small" style="margin-top:.9rem">What the room is voting for</div><div class="aff">${affs.map(([g, v]) => `<span class="chip ${v > 0 ? "up" : "down"}">${esc(g)} ${v > 0 ? "+" : ""}${Math.round(v * 100)}</span>`).join("")}</div>` : ""}`;
+
+    $("#history").innerHTML = S.history.length ? S.history.slice(0, 8).map((h) => `<div class="h"><span>${esc(h.title)} <span class="muted">· ${esc(h.artist)}</span></span><span>👍${h.up} 👎${h.down}${h.end_reason === "skipped_by_crowd" ? ` <span class="chip down">skipped</span>` : h.chosen_by === "host" ? ` <span class="chip">host</span>` : ""}</span></div>`).join("") : `<div class="muted small">Nothing yet.</div>`;
+
+    (S.events || []).forEach((e) => { if (e.type === "crowd_skip") toast(`The room skipped it (${e.up} up / ${e.down} down)`); if (e.type === "spotify_error") toast(e.detail, true); });
+  }
+  const topComponents = (c) => Object.entries(c).filter(([, v]) => Math.abs(v) >= 0.3).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 4).map(([k, v]) => `${k} ${v > 0 ? "+" : ""}${v.toFixed(1)}`).join(", ");
+
+  // smooth progress between polls
+  progTimer = setInterval(() => {
+    if (!S || !S.now_playing) return;
+    const t = S.now_playing.track, el = Math.min(t.duration_ms, lastElapsed + (Date.now() - lastAt) * (S.party.time_scale || 1));
+    const p = $("#prog"), e = $("#el"); if (p) p.style.width = `${(el / t.duration_ms) * 100}%`; if (e) e.textContent = mmss(el);
+  }, 1000);
+  poll();
+})();
+</script></body></html>

@@ -93,6 +93,11 @@ tests/test_pulse.py  8 tests: theme parsing, arc, affinity, scorer, skip rule, f
 
 **Realtime** is 3–4 s polling. `GET /state` runs one `tick()` (advance the player, apply crowd skips) and returns everything both pages need. No websockets to debug at 2 a.m.
 
+**Spotify call volume is deliberately minimized**, since Spotify rate-limits per app and a party full of polling phones adds up fast:
+- While a track is playing, `tick()` does **not** call Spotify's `/me/player` on every poll. It trusts a local clock (the track's known `duration_ms` against when we started it) and only makes a real call near the very end of the track (to catch it finishing precisely) or on a ~20s heartbeat (to catch a host changing the song manually on their phone). Starting a brand-new track costs zero state calls.
+- Search results are cached in-process for 2 minutes, keyed by the normalized query text and shared across guests/parties — two guests searching "cumbia" independently only hits Spotify once.
+- If you still hit a `429 QUOTA_EXCEEDED` (easy to trigger by hand while debugging — hitting `/search`, `/state`, `/spotify/devices` manually and repeatedly adds up fast, since each is a real call against the same limit), it now surfaces as a visible `spotify_error` event on the host screen instead of silently producing `no_candidates`. It's temporary and clears on its own; the mock catalog (`unset SPOTIFY_CLIENT_ID`, restart) needs zero Spotify calls and is a safe fallback if you're rate-limited mid-event.
+
 ### API
 
 ```
@@ -112,6 +117,17 @@ host: POST .../host/skip  .../host/play {track_id}  .../host/remove {track_id}
 ```
 
 ---
+
+## Testing with real songs, without hitting search
+
+Once Spotify is connected for a party, the host screen shows a **Load test
+tracks** button (`POST /parties/:code/host/seed-test-tracks`). It queues ~17
+real, popular songs — Blinding Lights, Mr. Brightside, Flowers, Despacito,
+Uptown Funk, etc. — with verified Spotify track URIs (`app/services/real_test_tracks.py`),
+as suggestions from the host. Autopilot and Skip can then play real Spotify
+audio without a single `/search` call, which is the endpoint most likely to
+hit a rate limit during setup/testing. Only available once `spotify_live`
+is true for that party (mock mode refuses with a clear error).
 
 ## Demo script (2 min)
 
