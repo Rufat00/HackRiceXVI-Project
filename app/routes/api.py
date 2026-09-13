@@ -10,6 +10,7 @@ from ..db import get_db
 from ..services import party as P
 from ..services.dj import parse_theme
 from ..services.spotify import SpotifyError
+from ..services.youtube import YouTubeError
 from ..services.real_test_tracks import seed_real_tracks
 
 api = Blueprint("api", __name__, url_prefix="/api")
@@ -24,6 +25,11 @@ def _body():
 @api.errorhandler(SpotifyError)
 def _sp_err(e):
     return jsonify(error=f"Spotify: {e}"), 502
+
+
+@api.errorhandler(YouTubeError)
+def _yt_err(e):
+    return jsonify(error=f"YouTube: {e}"), 502
 
 
 def _party_by_code(code):
@@ -130,9 +136,11 @@ def join():
 
 
 def _party_public(party):
+    source = "spotify" if P.spotify_live(party) else "youtube" if P.youtube_live(party) else "demo"
     return {"code": party["code"], "name": party["name"], "started_at": party["started_at"], "auto_dj": bool(party["auto_dj"]),
             "spotify_live": P.spotify_live(party), "spotify_mock": current_app.config["SPOTIFY_MOCK"],
-            "time_scale": current_app.config["MOCK_TIME_SCALE"] if current_app.config["SPOTIFY_MOCK"] else 1.0,
+            "youtube_live": P.youtube_live(party), "playback_source": source,
+            "time_scale": current_app.config["MOCK_TIME_SCALE"] if source == "demo" else 1.0,
             "settings": json.loads(party["settings"] or "{}")}
 
 
@@ -345,6 +353,8 @@ def host_play():
     t = P.get_track(tid)
     if not t:
         return jsonify(error="Unknown track"), 404
+    if not P.track_playable(g.party, t):
+        return jsonify(error="That track belongs to a different playback source. Search for it again."), 409
     cur = P.current_play(g.party["id"])
     if cur:
         P.end_play(cur["id"], "replaced")
@@ -353,6 +363,25 @@ def host_play():
     s, comp = dj.score_candidate(t, dict(ctx, n_suggesters=0, net_votes=0, first_suggested_min_ago=0, played_recently=False))
     P.start_play(g.party, {"track": t, "score": s, "components": comp, "explanation": "host pick"}, chosen_by="host")
     return jsonify(ok=True)
+
+
+@api.post("/parties/<code>/host/player-ended")
+@with_party
+@host_required
+def host_player_ended():
+    """Advance only when the current YouTube iframe reports FINISH/error."""
+    if not P.youtube_live(g.party):
+        return jsonify(error="The browser player is not active for this party"), 409
+    cur = P.current_play(g.party["id"])
+    try:
+        reported = int(_body().get("play_id"))
+    except (TypeError, ValueError):
+        return jsonify(error="Invalid play_id"), 400
+    if not cur or cur["id"] != reported:
+        return jsonify(ok=True, stale=True)
+    reason = "player_error" if _body().get("error") else "finished"
+    picked = P.advance(g.party, reason)
+    return jsonify(ok=True, next=picked["track"] if picked else None)
 
 
 @api.post("/parties/<code>/host/settings")

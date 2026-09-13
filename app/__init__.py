@@ -6,6 +6,7 @@ from .config import Config
 from .db import get_db, init_db
 from .services.ai import AI
 from .services.spotify import SpotifyClient
+from .services.youtube import YouTubeClient
 
 
 def create_app(overrides=None):
@@ -17,6 +18,7 @@ def create_app(overrides=None):
 
     app.extensions["spotify"] = None if app.config["SPOTIFY_MOCK"] else SpotifyClient(
         app.config["SPOTIFY_CLIENT_ID"], app.config["SPOTIFY_CLIENT_SECRET"], app.config["SPOTIFY_REDIRECT_URI"])
+    app.extensions["youtube"] = YouTubeClient(app.config["YOUTUBE_API_KEY"]) if app.config["YOUTUBE_API_KEY"] else None
     app.extensions["ai"] = AI(app.config["ANTHROPIC_API_KEY"], app.config["ANTHROPIC_MODEL"])
 
     from .routes.api import api
@@ -63,6 +65,7 @@ def create_app(overrides=None):
 
     @app.get("/healthz")
     def healthz():
-        return {"ok": True, "spotify_mock": app.config["SPOTIFY_MOCK"], "ai": app.extensions["ai"].enabled}
+        return {"ok": True, "spotify_mock": app.config["SPOTIFY_MOCK"],
+                "youtube": app.extensions["youtube"] is not None, "ai": app.extensions["ai"].enabled}
 
     return app

@@ -2,7 +2,7 @@
 
 An AI DJ for parties. The host puts a QR code on a screen; guests scan it and, with no account, request songs, vote 👍/👎 on what's playing, and pitch themes for the night. A **DJ brain** ranks every candidate with an explainable score and keeps the queue moving — and the big screen shows *why* each song was picked.
 
-Plays through **Spotify** (host connects once; the app searches the full catalog and controls their device) or, with no keys at all, through a built-in catalog with a simulated player so it demos anywhere.
+Plays directly in the host browser through **YouTube** (no YouTube app or guest login), through **Spotify Connect** when a host connects Spotify, or through a silent simulated catalog when no music API is configured.
 
 ---
 
@@ -12,6 +12,10 @@ Plays through **Spotify** (host connects once; the app searches the full catalog
 pip install -r requirements.txt
 MOCK_TIME_SCALE=20 python run.py      # songs fly by 20x for a demo; omit for real time
 ```
+
+`run.py` automatically loads `.env`. With `YOUTUBE_API_KEY` set, the host page
+shows a YouTube player. Click **Start music** once—browsers require that first
+gesture—then Pulse plays and advances the queue automatically.
 
 Open http://127.0.0.1:5000, name the party, and you're on the host screen. Scan the QR from a phone on the same network, or fake a crowd:
 
@@ -33,6 +37,19 @@ PUBLIC_URL=https://xxxx.ngrok.app python run.py
 3. On the host screen click **Connect Spotify**. Open Spotify on the laptop/speaker (Premium required for remote control) and press play once so it's the active device.
 
 From then on the app searches Spotify and starts each next track via Spotify Connect. If the host changes the song manually on their phone, Pulse notices, logs it as a host pick, and carries on.
+
+### YouTube (browser playback)
+
+1. Enable **YouTube Data API v3** in a Google Cloud project and create an API key.
+2. Add `YOUTUBE_API_KEY=...` to `.env`, then run `python3 run.py`.
+3. Create a room and click **Start music** in the host page's YouTube player.
+
+Guests search public, embeddable music videos through the Data API. Playback
+uses the official YouTube IFrame Player API and comes from the host browser.
+Search results are cached for an hour to conserve the project's daily quota.
+When the guest queue is thin, Auto DJ recommends from YouTube's regional
+most-popular Music chart instead of searching generic phrases. Set
+`YOUTUBE_REGION_CODE` (default `US`) to choose the chart.
 
 ### Claude (optional)
 
@@ -79,9 +96,10 @@ app/
   routes/api.py      JSON API (host + guest), QR PNG, Spotify login
   services/
     dj.py            pure scoring/parsing functions — unit tested, no I/O
-    party.py         engine: context → candidates → playback; tick() per poll; mock & Spotify players
+    party.py         engine: context → candidates → playback; tick() per poll; mock, YouTube & Spotify players
     catalog.py       48-track built-in catalog with energy/genre/year attributes
     spotify.py       OAuth, search + genre/feature enrichment, playback state/control
+    youtube.py       public music search + metadata normalization; browser handles playback
     ai.py            optional Claude for theme interpretation + shoutouts
   static/
     landing.html     create a party
@@ -129,5 +147,6 @@ If you're alone: `python simulate.py <code>` and narrate.
 
 - Spotify's `/audio-features` is restricted for apps created after Nov 2024, so live-mode energy may be `None`; the scorer then leans on votes, theme, genre affinity and popularity. Mock catalog has full attributes.
 - Spotify remote control needs Premium and an active device.
+- YouTube playback needs one initial host click, can include ads, and individual videos may become unavailable or blocked from embedding.
 - Guest identity is a cookie; clearing it lets someone vote twice. A real deployment would fingerprint or gate on the Wi-Fi.
 - Dispute/abuse tooling is minimal: the host can remove any queued track.

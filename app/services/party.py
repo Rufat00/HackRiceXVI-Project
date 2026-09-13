@@ -8,6 +8,7 @@ from flask import current_app
 from ..db import get_db
 from . import catalog, dj
 from .spotify import SpotifyError
+from .youtube import YouTubeError
 
 
 def _now():
@@ -22,6 +23,10 @@ def _sp():
     return current_app.extensions.get("spotify")
 
 
+def _yt():
+    return current_app.extensions.get("youtube")
+
+
 def tokens_for(party):
     return json.loads(party["spotify_tokens"]) if party["spotify_tokens"] else None
 
@@ -33,6 +38,20 @@ def save_tokens(party_id, tokens):
 
 def spotify_live(party):
     return bool(_sp()) and not current_app.config["SPOTIFY_MOCK"] and tokens_for(party) is not None
+
+
+def youtube_live(party):
+    """YouTube is the fallback player until this party connects Spotify."""
+    return bool(_yt()) and not spotify_live(party)
+
+
+def track_playable(party, track):
+    track_id = (track or {}).get("id", "")
+    if spotify_live(party):
+        return track_id.startswith("spotify:")
+    if youtube_live(party):
+        return track_id.startswith("youtube:")
+    return track_id.startswith("mock:")
 
 
 # ---------------------------------------------------------------- tracks
@@ -62,12 +81,14 @@ def get_track(track_id):
     return track_dict(r) if r else None
 
 
-_search_cache = {}  # {(spotify_live, query): (expires_at, results)}
+_search_cache = {}  # {(source, query): (expires_at, results)}
 SEARCH_CACHE_TTL_S = 120
+YOUTUBE_SEARCH_CACHE_TTL_S = 60 * 60
 
 
 def search_tracks(party, q):
-    key = (spotify_live(party), q.strip().lower())
+    source = "spotify" if spotify_live(party) else "youtube" if youtube_live(party) else "catalog"
+    key = (source, q.strip().lower())
     hit = _search_cache.get(key)
     if hit and hit[0] > time.time():
         return hit[1]
@@ -76,12 +97,30 @@ def search_tracks(party, q):
         if changed:
             save_tokens(party["id"], toks)
         results = _sp().search(toks, q)
+    elif youtube_live(party):
+        results = _yt().search(q)
     else:
         results = catalog.search(q)
     for t in results:
         upsert_track(t)
     get_db().commit()
-    _search_cache[key] = (time.time() + SEARCH_CACHE_TTL_S, results)
+    ttl = YOUTUBE_SEARCH_CACHE_TTL_S if source == "youtube" else SEARCH_CACHE_TTL_S
+    _search_cache[key] = (time.time() + ttl, results)
+    return results
+
+
+def youtube_chart_tracks(party):
+    """Cached mainstream music chart for Auto DJ fallback recommendations."""
+    region = current_app.config["YOUTUBE_REGION_CODE"].upper()
+    key = ("youtube", f"__most_popular_music__:{region}")
+    hit = _search_cache.get(key)
+    if hit and hit[0] > time.time():
+        return hit[1]
+    results = _yt().trending(region=region, limit=25)
+    for track in results:
+        upsert_track(track)
+    get_db().commit()
+    _search_cache[key] = (time.time() + YOUTUBE_SEARCH_CACHE_TTL_S, results)
     return results
 
 
@@ -102,10 +141,15 @@ def elapsed_ms(play):
     # genuinely connected we must reason in real time regardless of that
     # setting, since we now lean on this clock to decide when to bother
     # calling Spotify at all.
-    scale = 1.0 if current_app.extensions.get("spotify") and not current_app.config["SPOTIFY_MOCK"] \
-        else current_app.config["MOCK_TIME_SCALE"]
+    scale = 1.0 if spotify_live_for_clock() else current_app.config["MOCK_TIME_SCALE"]
     started = datetime.strptime(play["started_at"], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
     return int((_now() - started).total_seconds() * 1000 * scale)
+
+
+def spotify_live_for_clock():
+    # elapsed_ms only receives a play row, so use configured real-player
+    # availability. YouTube also runs at wall-clock speed.
+    return bool(_yt()) or (bool(_sp()) and not current_app.config["SPOTIFY_MOCK"])
 
 
 # How often (in seconds of a track's own elapsed time) we double-check with a
@@ -187,7 +231,7 @@ def candidates(party, ctx, include_fallback=True):
     seen = set()
     for r in rows:
         t = get_track(r["track_id"])
-        if not t:
+        if not t or not track_playable(party, t):
             continue
         seen.add(t["id"])
         c = dict(ctx, n_suggesters=r["n"], net_votes=r["net"], first_suggested_min_ago=dj.minutes_since(r["first_at"]),
@@ -214,20 +258,31 @@ _RATE_LIMIT_BACKOFF_SECONDS = 300  # 5 min backoff after a real 429
 
 def fallback_pool(party, ctx):
     """When the crowd hasn't queued enough, the DJ fills from the catalog
-    (mock) or a theme-driven Spotify search (live).
+    (mock), YouTube's regional music chart, or a theme-driven Spotify search.
 
     Cached briefly: without this, an empty queue on a live party means every
     3-second poll re-searches Spotify, which burns through their rate limit
     fast (this is exactly what happened during testing — repeated polling
     with nothing queued hammered /search continuously)."""
-    if spotify_live(party):
-        kws = (ctx["theme"] or {}).get("keywords") or []
-        q = " ".join(kws[:2]) if kws else ("party " + ("chill" if ctx["target_energy"] < 0.55 else "dance"))
+    if spotify_live(party) or youtube_live(party):
+        if youtube_live(party):
+            # Use YouTube's regional Music chart as the recommendation pool.
+            # The DJ scorer applies themes, learned affinity, energy and
+            # replay penalties locally; it never searches literal phrases
+            # such as "groovy party song" anymore.
+            q = f"mainstream-chart:{current_app.config['YOUTUBE_REGION_CODE'].upper()}"
+        else:
+            kws = (ctx["theme"] or {}).get("keywords") or []
+            vibe = "chill" if ctx["target_energy"] < 0.5 else "upbeat" if ctx["target_energy"] > 0.72 else "groovy"
+            q = " ".join(kws[:2]) if kws else f"party {vibe}"
         cached = _fallback_cache.get(party["id"])
         if cached and cached[1] == q and (time.monotonic() - cached[0]) < _FALLBACK_CACHE_SECONDS:
             return cached[2]
         try:
-            tracks = search_tracks(party, q)
+            tracks = youtube_chart_tracks(party) if youtube_live(party) else search_tracks(party, q)
+        except YouTubeError:
+            _fallback_cache[party["id"]] = (time.monotonic(), q, [])
+            raise
         except SpotifyError as e:
             if "429" in str(e) or "QUOTA_EXCEEDED" in str(e):
                 # Still cache the failure briefly so a rate limit doesn't
@@ -282,6 +337,19 @@ def tick(party):
     events = []
     cfg = current_app.config
     cur = current_play(party["id"])
+
+    # Parties can outlive a server restart and the configured playback source
+    # can change (for example, demo -> YouTube). Never leave an old mock or
+    # Spotify row stuck as "now playing" under the new player.
+    if cur:
+        current_track = get_track(cur["track_id"])
+        if not track_playable(party, current_track):
+            picked = advance(party, "source_changed") if party["auto_dj"] else None
+            if not party["auto_dj"]:
+                end_play(cur["id"], "source_changed")
+            if picked:
+                events.append({"type": "started", "track": picked["track"]["title"]})
+            return events
 
     if cur:
         up, down = play_votes(cur["id"])
@@ -359,6 +427,21 @@ def tick(party):
             picked = advance(party, "finished")
             if picked:
                 events.append({"type": "advanced", "track": picked["track"]["title"]})
+        return events
+
+    # The browser's official YouTube player is authoritative for completion.
+    # It calls the host/player-ended endpoint when the IFrame FINISH event
+    # fires, so guest polling must never silently advance the track here.
+    if youtube_live(party):
+        if cur is None and party["auto_dj"]:
+            try:
+                picked = advance(party, "start")
+            except YouTubeError as e:
+                return [{"type": "youtube_error", "detail": str(e)}]
+            if picked:
+                events.append({"type": "started", "track": picked["track"]["title"]})
+            else:
+                events.append({"type": "no_candidates"})
         return events
 
     # ---- mock player -------------------------------------------------------

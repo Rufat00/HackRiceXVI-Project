@@ -15,7 +15,7 @@
     const { esc, api, toast, art } = Pulse;
     const $ = (s) => document.querySelector(s);
     const app = $("#app");
-    let S = null, results = [], query = "", timer, searchTimer, dragging = false;
+    let S = null, results = [], query = "", timer, dragging = false;
 
     async function poll() {
       try {
@@ -56,7 +56,7 @@
           <span><b></b>${esc(S.party.name)}</span>
         </header>
         <form class="mobile-search" id="searchform">
-          <span aria-hidden="true">⌕</span>
+          <button class="search-submit" type="submit" aria-label="Search YouTube">⌕</button>
           <input id="searchinput" name="q" value="${esc(query)}" placeholder="Search a song or artist" autocomplete="off" enterkeyhint="search">
           ${query ? `<button type="button" id="clearsearch" aria-label="Clear search">×</button>` : ""}
         </form>
@@ -112,11 +112,9 @@
 
     function bindSearch() {
       const input = $("#searchinput");
-      input.oninput = (e) => {
-        query = e.target.value;
-        clearTimeout(searchTimer);
-        searchTimer = setTimeout(() => doSearch(query), 450);
-      };
+      // Search only on submit: YouTube gives projects a limited number of
+      // search calls, so firing once for every partial word wastes quota.
+      input.oninput = (e) => { query = e.target.value; };
       $("#searchform").onsubmit = (e) => { e.preventDefault(); query = input.value; doSearch(query); };
       const clear = $("#clearsearch");
       if (clear) clear.onclick = () => { query = ""; results = []; renderController(); $("#searchinput").focus(); };

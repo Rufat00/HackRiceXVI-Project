@@ -17,30 +17,24 @@
 
     <main class="host-stage" id="stage">
       <section class="now" id="now"><div class="empty">Warming up…</div></section>
-    </main>
-
-    <aside class="host-side">
-      <section class="join-card">
-        <div class="join-copy">
-          <span class="eyebrow">Join the room</span>
-          <div class="join-code" id="code"></div>
-          <div class="join-url" id="joinurl"></div>
+      <section class="youtube-card youtube-dock" id="youtube-card" hidden>
+        <span class="visually-hidden" id="yt-status" role="status">Loading YouTube</span>
+        <div class="youtube-frame">
+          <div id="youtube-player"></div>
+          <button class="btn youtube-start" id="youtube-start" type="button">▶ Start music</button>
         </div>
-        <img id="qr" alt="QR code to join this party">
       </section>
-
-      <section class="side-card room-card">
-        <div class="section-title"><span>Room pulse</span><span class="status-pill">Live</span></div>
-        <div class="room-stats" id="roomstats"></div>
-        <div class="room-vibe" id="room"></div>
-      </section>
-
-      <section class="side-card queue-card">
-        <div class="section-title"><span>Up next</span><span class="muted small" id="queuecount"></span></div>
-        <div class="list" id="queue"></div>
-      </section>
-    </aside>
+    </main>
   </div>
+
+  <dialog class="qr-dialog" id="qr-dialog" aria-labelledby="qr-title">
+    <button class="qr-close" id="qr-close" type="button" aria-label="Close QR code">×</button>
+    <span class="eyebrow">Join the room</span>
+    <h2 id="qr-title">Scan to join</h2>
+    <img id="qr" alt="QR code to join this party">
+    <div class="qr-code" id="code"></div>
+    <div class="qr-url" id="joinurl"></div>
+  </dialog>
 
   <div class="skip-flash" id="skipflash" role="status" aria-live="polite">
     <div class="skip-flash-icon">»</div>
@@ -54,6 +48,10 @@
     const { esc, api, mmss, toast, art } = Pulse;
     const $ = (s) => document.querySelector(s);
     let S = null, tickTimer, lastPlayId = null, lastDown = 0, lastElapsed = 0, lastAt = 0, flashTimer;
+    let ytPlayer = null, ytReady = false, ytApiLoading = false, ytUnlocked = false;
+    let ytPending = null, ytCuedPlayId = null, ytLoadedPlayId = null, ytEndingPlayId = null;
+    let beatSyncActive = false, beatStream = null, beatContext = null, beatAnalyser = null, beatFrame = null;
+    let beatHistory = [], previousBass = 0, lastDetectedBeat = 0, beatFlashTimer = null;
 
     $("#qr").src = `/api/parties/${Pulse.code()}/qr.png`;
     if (new URLSearchParams(location.search).get("spotify") === "connected") {
@@ -68,6 +66,7 @@
 
     function render() {
       const p = S.party, np = S.now_playing, dj = S.dj;
+      $(".host-app").classList.toggle("is-playing", Boolean(np));
       $("#pname").textContent = p.name;
       $("#code").textContent = p.code;
       $("#joinurl").textContent = S.join_url.replace(/^https?:\/\//, "");
@@ -75,10 +74,17 @@
       $("#hostbar").innerHTML = `
         <label class="toggle-label"><input type="checkbox" id="auto" ${p.auto_dj ? "checked" : ""}><span></span>Auto DJ</label>
         <button class="icon-button" id="skip" title="Skip this song" aria-label="Skip this song">»</button>
+        <button class="btn ghost sm beat-button ${beatSyncActive ? "on" : ""}" id="beat-sync" type="button">${beatSyncActive ? "Beat synced" : "Sync beat"}</button>
+        <button class="btn ghost sm qr-button" id="qr-open" type="button">QR</button>
         ${p.spotify_live ? `<button class="btn ghost sm" id="seed">Test tracks</button>` : ""}
-        ${p.spotify_mock ? `<span class="source-pill">Demo catalog</span>` : p.spotify_live ? `<span class="source-pill connected">Spotify</span>` : `<a class="btn quiet sm" href="/api/parties/${p.code}/spotify/login">Connect Spotify</a>`}`;
+        ${p.playback_source === "youtube" ? `<span class="source-pill connected">YouTube</span>` :
+          p.spotify_live ? `<span class="source-pill connected">Spotify</span>` :
+          p.spotify_mock ? `<span class="source-pill">Demo catalog</span>` :
+          `<a class="btn quiet sm" href="/api/parties/${p.code}/spotify/login">Connect Spotify</a>`}`;
       $("#auto").onchange = (e) => api("/host/settings", { body: { auto_dj: e.target.checked } });
       $("#skip").onclick = async () => { try { showSkipFlash(0, 0, true); await api("/host/skip", { body: {} }); clearTimeout(tickTimer); poll(); } catch (e) { toast(e.message, true); } };
+      $("#beat-sync").onclick = toggleBeatSync;
+      $("#qr-open").onclick = () => { unlockYouTube(); $("#qr-dialog").showModal(); };
       const seed = $("#seed");
       if (seed) seed.onclick = async () => { try { const r = await api("/host/seed-test-tracks", { body: {} }); toast(`Loaded ${r.added} tracks`); clearTimeout(tickTimer); poll(); } catch (e) { toast(e.message, true); } };
 
@@ -86,31 +92,213 @@
         $("#now").innerHTML = `<div class="empty stage-empty">${p.auto_dj ? "The DJ is finding the first track…" : "Auto DJ is off. Press skip to start."}</div>`;
         $("#stage").style.removeProperty("--cover-image");
       } else renderNow(np);
-
-      $("#roomstats").innerHTML = `
-        <div><strong>${S.stats.guests_active}</strong><span>listening</span></div>
-        <div><strong>${S.stats.votes_cast}</strong><span>votes</span></div>
-        <div><strong>${S.stats.open_requests}</strong><span>requests</span></div>`;
-      const energy = Math.round(dj.target_energy * 100);
-      $("#room").innerHTML = `
-        <div class="vibe-line"><span>Current vibe</span><strong>${esc(dj.active_theme || dj.phase)}</strong></div>
-        <div class="energy-track"><i style="width:${energy}%"></i></div>
-        <div class="energy-label"><span>${esc(dj.phase)}</span><span>${energy}% energy</span></div>`;
-
-      $("#queuecount").textContent = `${S.queue.length} track${S.queue.length === 1 ? "" : "s"}`;
-      $("#queue").innerHTML = S.queue.length ? S.queue.slice(0, 4).map((q, i) => `
-        <div class="queue-row ${q.source}">
-          <span class="queue-index">${String(i + 1).padStart(2, "0")}</span>${art(q.track)}
-          <div class="queue-copy"><div class="t">${esc(q.track.title)}</div><div class="a">${esc(q.track.artist)}</div></div>
-          <button class="queue-play" data-play="${esc(q.track.id)}" title="Play now" aria-label="Play ${esc(q.track.title)} now">▶</button>
-        </div>`).join("") : `<div class="muted small queue-empty">The DJ is building the queue.</div>`;
-      document.querySelectorAll("[data-play]").forEach((b) => b.onclick = async () => { await api("/host/play", { body: { track_id: b.dataset.play } }); clearTimeout(tickTimer); poll(); });
+      syncYouTube(p, np);
 
       (S.events || []).forEach((e) => {
         if (e.type === "crowd_skip") showSkipFlash(e.down, np ? np.skip_threshold.min_votes : e.down, true);
         if (e.type === "spotify_error") toast(e.detail, true);
+        if (e.type === "youtube_error") toast(e.detail, true);
       });
     }
+
+    function syncYouTube(party, np) {
+      const card = $("#youtube-card");
+      card.hidden = !party.youtube_live;
+      if (!party.youtube_live) {
+        if (ytPlayer && ytReady && ytLoadedPlayId) ytPlayer.stopVideo();
+        ytCuedPlayId = null;
+        ytLoadedPlayId = null;
+        return;
+      }
+      ensureYouTubePlayer();
+      const videoId = np && String(np.track.id).startsWith("youtube:") ? np.track.id.slice(8) : null;
+      ytPending = videoId ? { videoId, playId: np.play_id } : null;
+      if (ytReady) ytUnlocked ? loadPendingYouTube() : cuePendingYouTube();
+    }
+
+    function ensureYouTubePlayer() {
+      if (ytPlayer || ytApiLoading) return;
+      ytApiLoading = true;
+      const createPlayer = () => {
+        if (ytPlayer) return;
+        ytPlayer = new YT.Player("youtube-player", {
+          width: "100%", height: "100%",
+          playerVars: { playsinline: 1, controls: 0, rel: 0, origin: location.origin },
+          events: {
+            onReady: () => {
+              ytReady = true;
+              $("#yt-status").textContent = "Ready";
+              ytUnlocked ? loadPendingYouTube() : cuePendingYouTube();
+            },
+            onStateChange: (event) => {
+              if (event.data === YT.PlayerState.PLAYING) {
+                $("#yt-status").textContent = "Playing";
+                $("#youtube-start").hidden = true;
+              } else if (event.data === YT.PlayerState.PAUSED) {
+                $("#yt-status").textContent = "Paused";
+              } else if (event.data === YT.PlayerState.ENDED) {
+                finishYouTube(false);
+              }
+            },
+            onError: () => finishYouTube(true),
+          },
+        });
+      };
+      if (window.YT && window.YT.Player) {
+        createPlayer();
+        return;
+      }
+      window.onYouTubeIframeAPIReady = createPlayer;
+      const script = document.createElement("script");
+      script.src = "https://www.youtube.com/iframe_api";
+      script.onerror = () => {
+        ytApiLoading = false;
+        $("#yt-status").textContent = "Blocked";
+        toast("The YouTube player could not load. Check tracking/ad blockers.", true);
+      };
+      document.head.appendChild(script);
+    }
+
+    function loadPendingYouTube() {
+      if (!ytPending || !ytPlayer || ytLoadedPlayId === ytPending.playId) return;
+      ytLoadedPlayId = ytPending.playId;
+      ytEndingPlayId = null;
+      $("#yt-status").textContent = "Starting";
+      if (ytCuedPlayId === ytPending.playId) ytPlayer.playVideo();
+      else ytPlayer.loadVideoById(ytPending.videoId);
+    }
+
+    function cuePendingYouTube() {
+      if (!ytPending || !ytPlayer || ytCuedPlayId === ytPending.playId) return;
+      ytCuedPlayId = ytPending.playId;
+      ytPlayer.cueVideoById(ytPending.videoId);
+    }
+
+    async function finishYouTube(error) {
+      const playId = ytLoadedPlayId;
+      if (!playId || ytEndingPlayId === playId) return;
+      ytEndingPlayId = playId;
+      $("#yt-status").textContent = error ? "Unavailable" : "Next track";
+      try {
+        await api("/host/player-ended", { body: { play_id: playId, error } });
+        clearTimeout(tickTimer);
+        await poll();
+      } catch (e) {
+        ytEndingPlayId = null;
+        toast(e.message, true);
+      }
+    }
+
+    function unlockYouTube() {
+      if (ytUnlocked) return;
+      ytUnlocked = true;
+      $("#youtube-start").textContent = "Starting…";
+      if (ytReady) loadPendingYouTube();
+      else ensureYouTubePlayer();
+    }
+
+    $("#youtube-start").onclick = unlockYouTube;
+    const autoUnlock = () => {
+      if (!S || !S.party.youtube_live) return;
+      unlockYouTube();
+      document.removeEventListener("pointerdown", autoUnlock, true);
+    };
+    document.addEventListener("pointerdown", autoUnlock, true);
+
+    $("#qr-close").onclick = () => $("#qr-dialog").close();
+    $("#qr-dialog").onclick = (event) => {
+      if (event.target === $("#qr-dialog")) $("#qr-dialog").close();
+    };
+
+    async function toggleBeatSync() {
+      if (beatSyncActive) {
+        stopBeatSync();
+        toast("Beat sync off — using estimated tempo");
+        return;
+      }
+      if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        toast("Mic beat sync needs HTTPS or localhost.", true);
+        return;
+      }
+      try {
+        beatStream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+          video: false,
+        });
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        beatContext = new AudioCtx();
+        await beatContext.resume();
+        const source = beatContext.createMediaStreamSource(beatStream);
+        beatAnalyser = beatContext.createAnalyser();
+        beatAnalyser.fftSize = 2048;
+        beatAnalyser.smoothingTimeConstant = .5;
+        source.connect(beatAnalyser);
+        beatHistory = [];
+        previousBass = 0;
+        lastDetectedBeat = 0;
+        beatSyncActive = true;
+        $(".host-app").classList.add("mic-sync");
+        const button = $("#beat-sync");
+        if (button) { button.textContent = "Beat synced"; button.classList.add("on"); }
+        toast("Beat sync on — listening locally for bass hits");
+        detectBeat();
+      } catch (error) {
+        stopBeatSync();
+        toast(error.name === "NotAllowedError" ? "Microphone permission was denied." : "Could not start microphone beat sync.", true);
+      }
+    }
+
+    function detectBeat() {
+      if (!beatSyncActive || !beatAnalyser || !beatContext) return;
+      const bins = new Uint8Array(beatAnalyser.frequencyBinCount);
+      beatAnalyser.getByteFrequencyData(bins);
+      const hzPerBin = beatContext.sampleRate / beatAnalyser.fftSize;
+      const first = Math.max(1, Math.floor(45 / hzPerBin));
+      const last = Math.min(bins.length - 1, Math.ceil(180 / hzPerBin));
+      let sum = 0;
+      for (let i = first; i <= last; i++) sum += bins[i] * bins[i];
+      const bass = Math.sqrt(sum / Math.max(1, last - first + 1)) / 255;
+      const average = beatHistory.length ? beatHistory.reduce((a, b) => a + b, 0) / beatHistory.length : bass;
+      const variance = beatHistory.length ? beatHistory.reduce((a, b) => a + (b - average) ** 2, 0) / beatHistory.length : 0;
+      const threshold = average + Math.max(.035, Math.sqrt(variance) * 1.35);
+      const now = performance.now();
+      if (beatHistory.length >= 18 && bass > .11 && bass > threshold && bass > previousBass * 1.025 && now - lastDetectedBeat > 225) {
+        lastDetectedBeat = now;
+        flashDetectedBeat(Math.min(1, (bass - average) * 3.2 + .35));
+      }
+      previousBass = bass;
+      beatHistory.push(bass);
+      if (beatHistory.length > 54) beatHistory.shift();
+      beatFrame = requestAnimationFrame(detectBeat);
+    }
+
+    function flashDetectedBeat(strength) {
+      const app = $(".host-app");
+      app.style.setProperty("--detected-strength", strength.toFixed(2));
+      app.classList.remove("beat-hit");
+      void app.offsetWidth;
+      app.classList.add("beat-hit");
+      clearTimeout(beatFlashTimer);
+      beatFlashTimer = setTimeout(() => app.classList.remove("beat-hit"), 340);
+    }
+
+    function stopBeatSync() {
+      beatSyncActive = false;
+      if (beatFrame) cancelAnimationFrame(beatFrame);
+      beatFrame = null;
+      if (beatStream) beatStream.getTracks().forEach((track) => track.stop());
+      beatStream = null;
+      if (beatContext) beatContext.close().catch(() => {});
+      beatContext = null;
+      beatAnalyser = null;
+      beatHistory = [];
+      const app = $(".host-app");
+      app.classList.remove("mic-sync", "beat-hit");
+      const button = $("#beat-sync");
+      if (button) { button.textContent = "Sync beat"; button.classList.remove("on"); }
+    }
+
+    window.addEventListener("pagehide", stopBeatSync);
 
     function renderNow(np) {
       const t = np.track;
@@ -121,12 +309,28 @@
       lastElapsed = np.elapsed_ms;
       lastAt = Date.now();
 
-      const tempo = Number(t.tempo) || 96 + (Number(t.energy) || .5) * 48;
-      $("#stage").style.setProperty("--beat", `${(60 / tempo).toFixed(3)}s`);
+      const energy = t.energy == null ? Number(S.dj.target_energy || .6) : Number(t.energy);
+      const tempo = Number(t.tempo) || 82 + energy * 64;
+      const beat = `${(60 / tempo).toFixed(3)}s`;
+      const strength = `${(.24 + energy * .42).toFixed(2)}`;
+      document.documentElement.style.setProperty("--beat", beat);
+      document.documentElement.style.setProperty("--pulse-strength", strength);
+      $("#stage").style.setProperty("--beat", beat);
+      $("#stage").style.setProperty("--pulse-strength", strength);
+
+      const total = np.up + np.down;
+      if (!isNewTrack) {
+        const up = $("#now-up"), down = $("#now-down"), reactions = $("#now-reactions"), skips = $("#now-skips");
+        if (up) up.textContent = np.up;
+        if (down) down.textContent = np.down;
+        if (reactions) reactions.textContent = total ? `${total} people reacted` : "Be the first to react";
+        if (skips) skips.textContent = `${np.down}/${np.skip_threshold.min_votes} skip votes`;
+        return;
+      }
+
       if (t.art_url) $("#stage").style.setProperty("--cover-image", `url(${JSON.stringify(t.art_url)})`);
       else $("#stage").style.removeProperty("--cover-image");
 
-      const total = np.up + np.down;
       const genres = (t.genres || []).slice(0, 2).join(" · ");
       $("#now").innerHTML = `
         <div class="cover-zone">
@@ -142,12 +346,26 @@
           <div class="play-progress"><i id="prog" style="width:${Math.min(100, np.elapsed_ms / t.duration_ms * 100)}%"></i></div>
           <div class="time-row"><span id="el">${mmss(np.elapsed_ms)}</span><span>${mmss(t.duration_ms)}</span></div>
           <div class="crowd-line">
-            <div class="reaction up"><span>♥</span><strong>${np.up}</strong></div>
-            <div class="crowd-copy"><strong>${total ? `${total} people reacted` : "Be the first to react"}</strong><span>${np.down}/${np.skip_threshold.min_votes} skip votes</span></div>
-            <div class="reaction down"><span>×</span><strong>${np.down}</strong></div>
+            <div class="reaction up"><span>♥</span><strong id="now-up">${np.up}</strong></div>
+            <div class="crowd-copy"><strong id="now-reactions">${total ? `${total} people reacted` : "Be the first to react"}</strong><span id="now-skips">${np.down}/${np.skip_threshold.min_votes} skip votes</span></div>
+            <div class="reaction down"><span>×</span><strong id="now-down">${np.down}</strong></div>
           </div>
           <p class="why">${esc(np.explanation || "Selected for the room right now.")}</p>
         </div>`;
+
+      // Measure the actual overflow instead of sliding by an arbitrary
+      // percentage. The animation alternates direction and pauses gently at
+      // both ends, so there is never a visible snap back to the beginning.
+      requestAnimationFrame(() => {
+        const windowEl = $(".marquee-window"), trackEl = $(".marquee-track");
+        if (!windowEl || !trackEl) return;
+        const overflow = Math.max(0, trackEl.scrollWidth - windowEl.clientWidth);
+        if (overflow > 8) {
+          trackEl.style.setProperty("--marquee-distance", `${overflow}px`);
+          trackEl.style.setProperty("--marquee-duration", `${Math.min(24, Math.max(9, 5 + overflow / 32)).toFixed(1)}s`);
+          trackEl.classList.add("sliding");
+        }
+      });
     }
 
     function showSkipFlash(count, threshold, skipped) {
@@ -165,7 +383,9 @@
     setInterval(() => {
       if (!S || !S.now_playing) return;
       const t = S.now_playing.track;
-      const el = Math.min(t.duration_ms, lastElapsed + (Date.now() - lastAt) * (S.party.time_scale || 1));
+      const playerTime = S.party.youtube_live && ytReady && ytPlayer && ytLoadedPlayId === S.now_playing.play_id
+        ? ytPlayer.getCurrentTime() * 1000 : null;
+      const el = Math.min(t.duration_ms, playerTime !== null ? playerTime : lastElapsed + (Date.now() - lastAt) * (S.party.time_scale || 1));
       const p = $("#prog"), e = $("#el");
       if (p) p.style.width = `${el / t.duration_ms * 100}%`;
       if (e) e.textContent = mmss(el);

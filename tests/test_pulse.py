@@ -6,6 +6,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from app import create_app  # noqa: E402
 from app.services import dj  # noqa: E402
+from app.services.youtube import NON_SONG_TITLE, _audio_profile  # noqa: E402
 
 
 # ---------------------------------------------------------------- dj brain
@@ -54,10 +55,19 @@ def test_skip_rule():
     assert not dj.should_skip(3, 3, 4, -0.5)        # split room
 
 
+def test_youtube_single_song_filter_and_vibe_profile():
+    assert NON_SONG_TITLE.search("Summer Hits 2026 - Full Album")
+    assert NON_SONG_TITLE.search("Best Dance Music Mix")
+    assert not NON_SONG_TITLE.search("Daft Punk - One More Time (Official Video)")
+    genres, energy, tempo = _audio_profile("upbeat latin party song")
+    assert "latin" in genres and energy > .75 and tempo >= 120
+
+
 # ---------------------------------------------------------------- party flow
 def make_app(**cfg):
     d = tempfile.mkdtemp()
-    base = dict(TESTING=True, DATABASE_PATH=os.path.join(d, "p.db"), SPOTIFY_MOCK=True, MOCK_TIME_SCALE=1.0, SKIP_MIN_VOTES=3)
+    base = dict(TESTING=True, DATABASE_PATH=os.path.join(d, "p.db"), SPOTIFY_MOCK=True,
+                YOUTUBE_API_KEY="", MOCK_TIME_SCALE=1.0, SKIP_MIN_VOTES=3)
     base.update(cfg)
     return create_app(base)
 
@@ -148,6 +158,41 @@ def test_mock_player_advances_with_time_scale():
     st = host.get(f"/api/parties/{code}/state").json
     assert st["now_playing"]["track"]["id"] != first
     assert any(e["type"] == "advanced" for e in st["events"])
+
+
+def test_youtube_player_finish_advances_server_queue():
+    app = make_app(YOUTUBE_API_KEY="test-key")
+
+    class FakeYouTube:
+        def search(self, _query):
+            return [
+                {"id": f"youtube:test{i}", "title": f"Song {i}", "artist": "Artist",
+                 "album": "YouTube", "year": 2026, "duration_ms": 180000,
+                 "genres": ["music"], "energy": None, "danceability": None,
+                 "valence": None, "tempo": None, "popularity": 50,
+                 "art_url": None, "preview_url": None, "explicit": 0}
+                for i in range(4)
+            ]
+
+        def trending(self, region="US", limit=25):
+            return self.search(f"{region}:{limit}")
+
+    app.extensions["youtube"] = FakeYouTube()
+    host = app.test_client()
+    code = host.post("/api/parties", json={}).json["code"]
+    first_state = host.get(f"/api/parties/{code}/state").json
+    assert first_state["party"]["playback_source"] == "youtube"
+    assert first_state["now_playing"]["track"]["id"].startswith("youtube:")
+    play_id = first_state["now_playing"]["play_id"]
+
+    r = host.post(f"/api/parties/{code}/host/player-ended", json={"play_id": play_id})
+    assert r.status_code == 200 and r.json["next"]
+    next_state = host.get(f"/api/parties/{code}/state").json
+    assert next_state["now_playing"]["play_id"] != play_id
+
+    # A duplicated FINISH event from the old iframe must not skip two songs.
+    r = host.post(f"/api/parties/{code}/host/player-ended", json={"play_id": play_id})
+    assert r.status_code == 200 and r.json["stale"] is True
 
 
 def test_rate_limit_and_theme_dedupe():
