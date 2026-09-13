@@ -209,7 +209,7 @@ def candidates(party, ctx, include_fallback=True):
 
 _fallback_cache = {}  # party_id -> (fetched_at_monotonic, query, tracks)
 _FALLBACK_CACHE_SECONDS = 25
-_RATE_LIMIT_BACKOFF_SECONDS = 90  # back off harder specifically after a 429
+_RATE_LIMIT_BACKOFF_SECONDS = 300  # 5 min backoff after a real 429
 
 
 def fallback_pool(party, ctx):

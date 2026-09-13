@@ -52,3 +52,22 @@ def seed_real_tracks(party, upsert_track_fn, db):
         out.append(t)
     db.commit()
     return out
+
+
+def seed_and_suggest(party, guest_id, upsert_track_fn, db):
+    """Seed the tracks AND queue them as suggestions attributed to guest_id
+    (typically the host), so autopilot/Skip can play them immediately with
+    zero /search calls. Returns (added, total)."""
+    tracks = seed_real_tracks(party, upsert_track_fn, db)
+    added = 0
+    for t in tracks:
+        try:
+            db.execute("INSERT INTO suggestions (party_id, track_id, guest_id, note) VALUES (?,?,?,?)",
+                       (party["id"], t["id"], guest_id, "test track"))
+            db.execute("INSERT OR REPLACE INTO suggestion_votes (party_id, track_id, guest_id, value) VALUES (?,?,?,1)",
+                       (party["id"], t["id"], guest_id))
+            added += 1
+        except Exception:
+            pass
+    db.commit()
+    return added, len(tracks)
