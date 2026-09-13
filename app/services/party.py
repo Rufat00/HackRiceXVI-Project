@@ -189,12 +189,6 @@ def candidates(party, ctx, include_fallback=True):
         t = get_track(r["track_id"])
         if not t:
             continue
-        if spotify_live(party) and not t["id"].startswith("spotify:track:"):
-            # A mock-catalog track suggested/queued before this party
-            # connected to Spotify. Real Spotify can't play it -- drop it
-            # from candidates rather than let it surface and later 400 when
-            # the DJ tries to start it.
-            continue
         seen.add(t["id"])
         c = dict(ctx, n_suggesters=r["n"], net_votes=r["net"], first_suggested_min_ago=dj.minutes_since(r["first_at"]),
                  played_recently=t["id"] in ctx["played_recently"])
@@ -213,15 +207,9 @@ def candidates(party, ctx, include_fallback=True):
     return out
 
 
-_fallback_cache = {}  # party_id -> (fetched_at_monotonic, query, tracks, error_or_None)
-_FALLBACK_CACHE_SECONDS = 150  # ~2.5 min: autopilot with an empty/thin queue only
-                                # re-searches Spotify this often, not every poll.
-                                # (Was 25s -- fine for many tabs polling the same
-                                # instant, but still ~140 calls/hour over a long
-                                # idle queue across a multi-hour party.)
-_RATE_LIMIT_BACKOFF_SECONDS = 300  # 5 min: a real 429 backs off much longer than
-                                    # a routine empty-queue refresh, since retrying
-                                    # too soon risks extending the rate limit further.
+_fallback_cache = {}  # party_id -> (fetched_at_monotonic, query, tracks)
+_FALLBACK_CACHE_SECONDS = 25
+_RATE_LIMIT_BACKOFF_SECONDS = 90  # back off harder specifically after a 429
 
 
 def fallback_pool(party, ctx):
@@ -231,38 +219,23 @@ def fallback_pool(party, ctx):
     Cached briefly: without this, an empty queue on a live party means every
     3-second poll re-searches Spotify, which burns through their rate limit
     fast (this is exactly what happened during testing — repeated polling
-    with nothing queued hammered /search continuously).
-
-    A rate limit is cached as a failure for the LONGER
-    _RATE_LIMIT_BACKOFF_SECONDS window (not the routine
-    _FALLBACK_CACHE_SECONDS one) so autopilot doesn't immediately retry a 429
-    and risk extending it -- but we still re-raise every time so a genuine
-    action (the host's Skip button, or the next autopilot attempt) always
-    surfaces the real reason rather than a silent empty queue. Only the
-    *Spotify call itself* is skipped during backoff, never the visibility."""
+    with nothing queued hammered /search continuously)."""
     if spotify_live(party):
         kws = (ctx["theme"] or {}).get("keywords") or []
         q = " ".join(kws[:2]) if kws else ("party " + ("chill" if ctx["target_energy"] < 0.55 else "dance"))
         cached = _fallback_cache.get(party["id"])
-        if cached:
-            fetched_at, cached_q, tracks, err = cached
-            window = _RATE_LIMIT_BACKOFF_SECONDS if err else _FALLBACK_CACHE_SECONDS
-            if cached_q == q and (time.monotonic() - fetched_at) < window:
-                if err:
-                    raise err
-                return tracks
+        if cached and cached[1] == q and (time.monotonic() - cached[0]) < _FALLBACK_CACHE_SECONDS:
+            return cached[2]
         try:
             tracks = search_tracks(party, q)
         except SpotifyError as e:
             if "429" in str(e) or "QUOTA_EXCEEDED" in str(e):
-                # Back off calling Spotify again for a while, but keep
-                # re-raising the SAME error on every attempt during that
-                # window so nothing (autopilot or a manual Skip) ever sees
-                # a silent empty queue instead of the real reason.
-                _fallback_cache[party["id"]] = (time.monotonic(), q, [], e)
+                # Still cache the failure briefly so a rate limit doesn't
+                # itself get hammered every poll while it's in effect.
+                _fallback_cache[party["id"]] = (time.monotonic(), q, [])
                 raise
             return []
-        _fallback_cache[party["id"]] = (time.monotonic(), q, tracks, None)
+        _fallback_cache[party["id"]] = (time.monotonic(), q, tracks)
         return tracks
     return catalog.CATALOG
 
@@ -273,16 +246,6 @@ def start_play(party, cand, chosen_by="dj"):
     t = cand["track"]
     upsert_track(t)
     if spotify_live(party):
-        if not t["id"].startswith("spotify:track:"):
-            # A stale mock-catalog track (e.g. from crowd suggestions made,
-            # or history left over, before this party connected to Spotify)
-            # must never be sent to the real Spotify API -- it will 400.
-            raise SpotifyError(
-                f"Track {t['id']!r} ({t.get('title')!r}) isn't a real Spotify "
-                f"track -- looks like a leftover mock-catalog suggestion from "
-                f"before Spotify was connected for this party. Skip again to "
-                f"let the DJ pick something real."
-            )
         toks, changed = _sp().ensure_fresh(tokens_for(party))
         if changed:
             save_tokens(party["id"], toks)

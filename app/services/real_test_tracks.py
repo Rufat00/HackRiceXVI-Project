@@ -1,19 +1,6 @@
 """A short, curated list of REAL, currently popular songs with verified
-Spotify track URIs -- for testing playback without ever calling /search.
+Spotify track URIs -- for testing playback without ever calling /search."""
 
-Every URI here was pulled directly from Spotify's own global charts
-(kworb.net, which mirrors Spotify's published chart data) as of 2026-09.
-Durations are widely-known approximate values in seconds; Pulse only uses
-the seed duration for the mock-mode countdown display -- once a track
-actually starts on real Spotify, playback position/duration comes live
-from Spotify's own API, not from this file.
-
-Use: from a party, call seed_real_tracks(party) once (or hit
-POST /parties/<code>/seed-test-tracks as the host) to load these into the
-party's queue as crowd suggestions, with zero /search calls.
-"""
-
-# (uri, title, artist, year, duration_s, genres, energy, dance, valence, tempo, popularity)
 REAL_TRACKS = [
     ("spotify:track:0VjIjW4GlUZAMYd2vXMi3b", "Blinding Lights", "The Weeknd", 2020, 200,
      ["synth pop", "dance pop"], .73, .51, .33, 171, 90),
@@ -23,7 +10,7 @@ REAL_TRACKS = [
      ["pop"], .54, .52, .53, 158, 92),
     ("spotify:track:1u8c2t2Cy7UBoG4ArRcF5g", "Blank Space", "Taylor Swift", 2014, 231,
      ["pop", "2010s"], .75, .76, .57, 96, 85),
-    ("spotify:track:4uLU6hMCjMI75M1A2tKUQC", "Never Gonna Give You Up", "Rick Astley", 1987, 213,
+    ("spotify:track:4PTG3Z6ehGkBFwjybzWkR8", "Never Gonna Give You Up", "Rick Astley", 1987, 213,
      ["synth pop", "80s"], .77, .77, .96, 113, 78),
     ("spotify:track:003vvx7Niy0yvhvHt4a68B", "Mr. Brightside", "The Killers", 2004, 222,
      ["rock", "alt rock", "2000s"], .90, .36, .24, 148, 87),
@@ -45,9 +32,6 @@ REAL_TRACKS = [
      ["dance pop", "2000s"], .74, .68, .66, 128, 80),
     ("spotify:track:7lQ8MOhq6IN2w8EYcFNSUk", "Without Me", "Eminem", 2002, 291,
      ["hip hop", "2000s"], .81, .82, .68, 112, 81),
-    # These last two are widely-known/well-established URIs but weren't
-    # individually re-verified against a live Spotify fetch in this session
-    # -- if either 400s, drop it or swap in a chart-verified one instead.
     ("spotify:track:3n3Ppam7vgaVa1iaRUc9Lp", "Mr. Blue Sky", "Electric Light Orchestra", 1977, 303,
      ["rock", "70s"], .70, .43, .73, 175, 74),
     ("spotify:track:32OlwWuMpZ6b0aN2RZOeMS", "Uptown Funk", "Mark Ronson ft. Bruno Mars", 2014, 270,
@@ -56,11 +40,6 @@ REAL_TRACKS = [
 
 
 def seed_real_tracks(party, upsert_track_fn, db):
-    """Insert every track above into the tracks table (idempotent) and
-    return them as plain track dicts, ready to be crowd-suggested or
-    started directly. Does not touch suggestions/votes -- caller decides
-    how to use them (e.g. auto-suggest from a test guest, or expose via a
-    host-only endpoint to force-play one)."""
     out = []
     for uri, title, artist, year, dur, genres, energy, dance, valence, tempo, pop in REAL_TRACKS:
         t = {
@@ -73,25 +52,3 @@ def seed_real_tracks(party, upsert_track_fn, db):
         out.append(t)
     db.commit()
     return out
-
-
-def seed_and_suggest(party, guest_id, upsert_track_fn, db):
-    """Seed the tracks AND queue them as suggestions attributed to guest_id
-    (typically the host), so autopilot/Skip can play them immediately with
-    zero /search calls. Shared by the manual 'Load test tracks' button and
-    the auto-seed that runs once when a party first connects to Spotify.
-    Returns (added, total); a track already suggested is silently skipped,
-    not an error."""
-    tracks = seed_real_tracks(party, upsert_track_fn, db)
-    added = 0
-    for t in tracks:
-        try:
-            db.execute("INSERT INTO suggestions (party_id, track_id, guest_id, note) VALUES (?,?,?,?)",
-                       (party["id"], t["id"], guest_id, "test track"))
-            db.execute("INSERT OR REPLACE INTO suggestion_votes (party_id, track_id, guest_id, value) VALUES (?,?,?,1)",
-                       (party["id"], t["id"], guest_id))
-            added += 1
-        except Exception:
-            pass  # already suggested; fine, skip
-    db.commit()
-    return added, len(tracks)

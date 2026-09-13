@@ -315,21 +315,25 @@ def host_skip():
         return jsonify(error="No song available to play right now — the queue is empty and the fallback search found nothing."), 409
     return jsonify(ok=True, next=picked["track"])
 
-
 @api.post("/parties/<code>/host/seed-test-tracks")
 @with_party
 @host_required
 def host_seed_test_tracks():
-    """Load a curated list of REAL, verified-URI popular songs into the
-    party's crowd queue as suggestions from the host, so autopilot/Skip can
-    play real Spotify tracks without ever calling /search (which is what
-    was hitting the rate limit). Testing/demo convenience -- real guests
-    should use normal search once you're past the rate limit."""
     if current_app.config["SPOTIFY_MOCK"] or not P.spotify_live(g.party):
-        return jsonify(error="Connect Spotify for this party first — seeding real tracks only makes sense in live mode."), 400
-    from ..services.real_test_tracks import seed_and_suggest
-    added, total = seed_and_suggest(g.party, g.guest["id"], P.upsert_track, get_db())
-    return jsonify(ok=True, added=added, total=total)
+        return jsonify(error="Connect Spotify for this party first."), 400
+    tracks = seed_real_tracks(g.party, P.upsert_track, get_db())
+    added = 0
+    for t in tracks:
+        try:
+            get_db().execute("INSERT INTO suggestions (party_id, track_id, guest_id, note) VALUES (?,?,?,?)",
+                             (g.party["id"], t["id"], g.guest["id"], "test track"))
+            get_db().execute("INSERT OR REPLACE INTO suggestion_votes (party_id, track_id, guest_id, value) VALUES (?,?,?,1)",
+                             (g.party["id"], t["id"], g.guest["id"]))
+            added += 1
+        except Exception:
+            pass
+    get_db().commit()
+    return jsonify(ok=True, added=added, total=len(tracks))
 
 
 @api.post("/parties/<code>/host/play")
